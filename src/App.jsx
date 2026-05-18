@@ -1415,11 +1415,23 @@ INSTRUÇÕES IMPORTANTES:
 // APLICAÇÃO DO PATCH no template
 // ============================================================
 
-function aplicarPatch(templateInfo, patch, aprovacoes) {
+function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
   // aprovacoes é um objeto { 'contrib': bool, 'fonte_<cnpj>': bool, 'bem_<idx>': bool, ... }
+  // manualOverrides são edições do contador sobre itens propostos (Fase 1 da edição manual).
+  // Chave: ex. "bem_atualizado_3", "bem_novo_0", "fonte_atualizada_5". Valor: subset de campos sobrescritos.
   const linhasOriginais = [...templateInfo.linhas];
   const novasLinhas = [...linhasOriginais];
   const aplicadas = [];
+
+  // Helper: aplica override (se existir) por cima de um item do patch antes de escrever no .DBK.
+  // Garante que o valor que vai pra Receita é o EDITADO PELO CONTADOR, não o original da IA.
+  const aplicaOv = (item, chave) => {
+    const ov = manualOverrides[chave];
+    if (!ov) return item;
+    // Items "string" legados viram { resumo: string } antes de mesclar
+    const base = typeof item === "string" ? { resumo: item } : item;
+    return { ...base, ...ov };
+  };
 
   // 16 — contribuinte/endereço
   if (templateInfo.contribuinte && (patch.contribuinte || patch.endereco) && aprovacoes["contrib"] !== false) {
@@ -1435,9 +1447,11 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
   for (const f of patch.fontes_pagadoras || []) {
     const cnpjLimpo = String(f.cnpj || "").replace(/\D/g, "").padStart(14, "0");
     if (aprovacoes[`fonte_${cnpjLimpo}`] === false) continue;
-    const fonteTpl = templateInfo.fontes.find((x) => x.cnpj === cnpjLimpo);
-    if (!fonteTpl) continue;
-    novasLinhas[fonteTpl._idx] = modificarReg21(linhasOriginais[fonteTpl._idx], f);
+    const idxTpl = templateInfo.fontes.findIndex((x) => x.cnpj === cnpjLimpo);
+    if (idxTpl < 0) continue;
+    const fonteTpl = templateInfo.fontes[idxTpl];
+    const fFinal = aplicaOv(f, `fonte_atualizada_${idxTpl + 1}`);
+    novasLinhas[fonteTpl._idx] = modificarReg21(linhasOriginais[fonteTpl._idx], fFinal);
     aplicadas.push(`fonte ${cnpjLimpo}`);
   }
 
@@ -1447,7 +1461,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
     const tpl = templateInfo.bens[b.idx - 1];
     if (!tpl) continue;
     if (!bemAtualizavel(tpl)) continue; // proteção dupla
-    novasLinhas[tpl._idx] = modificarReg27(linhasOriginais[tpl._idx], b);
+    const bFinal = aplicaOv(b, `bem_atualizado_${b.idx}`);
+    novasLinhas[tpl._idx] = modificarReg27(linhasOriginais[tpl._idx], bFinal);
     aplicadas.push(`bem B${b.idx}`);
   }
 
@@ -1456,7 +1471,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
     if (aprovacoes[`divida_${d.idx}`] === false) continue;
     const tpl = templateInfo.dividas[d.idx - 1];
     if (!tpl) continue;
-    novasLinhas[tpl._idx] = modificarReg28(linhasOriginais[tpl._idx], d);
+    const dFinal = aplicaOv(d, `divida_atualizada_${d.idx}`);
+    novasLinhas[tpl._idx] = modificarReg28(linhasOriginais[tpl._idx], dFinal);
     aplicadas.push(`dívida V${d.idx}`);
   }
 
@@ -1470,7 +1486,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
   }
 
   // 86/84 — rendimentos isentos
-  for (const ri of patch.rendimentos_isentos_atualizados || []) {
+  for (const _ri of patch.rendimentos_isentos_atualizados || []) {
+    const ri = aplicaOv(_ri, `isento_atualizado_${_ri.idx}`);
     if (aprovacoes[`isento_${ri.idx}`] === false) continue;
     const tpl = templateInfo.rendIsentos[ri.idx - 1];
     if (!tpl) continue;
@@ -1501,7 +1518,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
   }
 
   // 26 — pagamentos efetuados (UPDATE)
-  for (const p of patch.pagamentos_atualizados || []) {
+  for (const _p of patch.pagamentos_atualizados || []) {
+    const p = aplicaOv(_p, `pag_atualizado_${_p.idx}`);
     if (aprovacoes[`pag_${p.idx}`] === false) continue;
     const tpl = templateInfo.pagamentos[p.idx - 1];
     if (!tpl) continue;
@@ -1521,7 +1539,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
   }
 
   // 88 — rendimentos sujeitos à tributação exclusiva (UPDATE)
-  for (const e of patch.rendimentos_exclusivos_atualizados || []) {
+  for (const _e of patch.rendimentos_exclusivos_atualizados || []) {
+    const e = aplicaOv(_e, `excl_atualizado_${_e.idx}`);
     if (aprovacoes[`excl_${e.idx}`] === false) continue;
     const tpl = templateInfo.rendExclusivos[e.idx - 1];
     if (!tpl) continue;
@@ -1598,7 +1617,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
 
   // 21 — fontes pagadoras NOVAS (PJ apenas, identificadas por CNPJ válido)
   const linhaBase21 = buscarLinhaBase(linhasOriginais, "21");
-  (patch.fontes_novas || []).forEach((f, i) => {
+  (patch.fontes_novas || []).forEach((_f, i) => {
+    const f = aplicaOv(_f, `fonte_novo_${i}`);
     if (aprovacoes[`fonte_nova_${i}`] === false) return;
     const cnpj = String(f.cnpj || "").replace(/\D/g, "");
     if (cnpj.length !== 14) return; // sem CNPJ válido, não é PJ → não grava (PF vai pra outra ficha)
@@ -1609,7 +1629,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
 
   // 27 — bens NOVOS
   const linhaBase27 = buscarLinhaBase(linhasOriginais, "27");
-  (patch.bens_novos_aviso || []).forEach((b, i) => {
+  (patch.bens_novos_aviso || []).forEach((_b, i) => {
+    const b = aplicaOv(_b, `bem_novo_${i}`);
     if (aprovacoes[`bem_novo_${i}`] === false) return;
     if (typeof b === "string") return; // legado: aviso textual, não grava
     linhasAInserir.push(criarReg27(cpfContrib, b, linhaBase27));
@@ -1619,7 +1640,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
 
   // 28 — dívidas NOVAS
   const linhaBase28 = buscarLinhaBase(linhasOriginais, "28");
-  (patch.dividas_novas_aviso || []).forEach((d, i) => {
+  (patch.dividas_novas_aviso || []).forEach((_d, i) => {
+    const d = aplicaOv(_d, `divida_novo_${i}`);
     if (aprovacoes[`divida_nova_${i}`] === false) return;
     if (typeof d === "string") return;
     linhasAInserir.push(criarReg28(cpfContrib, d, linhaBase28));
@@ -1629,7 +1651,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
 
   // 26 — pagamentos NOVOS
   const linhaBase26 = buscarLinhaBase(linhasOriginais, "26");
-  (patch.pagamentos_novos_aviso || []).forEach((p, i) => {
+  (patch.pagamentos_novos_aviso || []).forEach((_p, i) => {
+    const p = aplicaOv(_p, `pag_novo_${i}`);
     if (aprovacoes[`pag_novo_${i}`] === false) return;
     if (typeof p === "string") return;
     linhasAInserir.push(criarReg26(cpfContrib, p, linhaBase26));
@@ -1639,7 +1662,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes) {
 
   // 88 — rendimentos exclusivos NOVOS
   const linhaBase88 = buscarLinhaBase(linhasOriginais, "88");
-  (patch.rendimentos_exclusivos_novos_aviso || []).forEach((e, i) => {
+  (patch.rendimentos_exclusivos_novos_aviso || []).forEach((_e, i) => {
+    const e = aplicaOv(_e, `excl_novo_${i}`);
     if (aprovacoes[`excl_novo_${i}`] === false) return;
     if (typeof e === "string") return;
     linhasAInserir.push(criarReg88(cpfContrib, e, linhaBase88));
@@ -3080,7 +3104,7 @@ function consolidarDadosConsolidacao(dadosExtraidos, reciboInfo) {
 }
 
 // Wrappers compatíveis com a API anterior
-async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
+async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo, manualOverrides = {}) {
   const jsPDF = await carregarJsPDF();
   if (!jsPDF) throw new Error("jsPDF indisponível");
   const doc = new jsPDF({ unit: "mm", format: "a4" });
@@ -3230,7 +3254,8 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // pares: array de [label1, valor1, label2, valor2] — cada elemento é uma linha
   // linhaDestaque: string, array de strings ou null — aparece em negrito azul no fim
   // badgeText/badgeCor: opcional — desenha badge no canto direito do header
-  const renderCard = (corBorda, bgCor, header, origem, pares, linhaDestaque, badgeText, badgeCor) => {
+  // editado: opcional — se true, desenha badge "EDITADO" (âmbar) à esquerda do principal
+  const renderCard = (corBorda, bgCor, header, origem, pares, linhaDestaque, badgeText, badgeCor, editado) => {
     const FONT_HEADER = 11;
     const FONT_ORIGEM = 7.8;
     const FONT_CAMPO = 8.5;
@@ -3245,8 +3270,8 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
     const X_VAL2 = MARG_L + (LARG / 2) + 34;
     const COL1_W = (LARG / 2) - 37 - 3;
     const COL2_W = (LARG / 2) - 34 - 4;
-    // Reserva espaço pro badge no header (à direita)
-    const RESERVA_BADGE = badgeText ? 22 : 0;
+    // Reserva espaço pro(s) badge(s) no header (à direita)
+    const RESERVA_BADGE = badgeText ? (editado ? 42 : 22) : (editado ? 22 : 0);
 
     // Normalizar linhaDestaque pra array
     const destaqueLinhas = linhaDestaque
@@ -3287,9 +3312,15 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
     setFill(corBorda);
     doc.rect(MARG_L, yInicio - 1, 1.5, alturaTotal, "F");
 
-    // --- Badge no canto superior direito ---
+    // --- Badges no canto superior direito ---
+    // Badge principal (status) à direita; badge "EDITADO" (âmbar) à esquerda dele se houve edição.
+    let xBadge = MARG_L + LARG - 4;
     if (badgeText) {
-      desenhaBadge(badgeText, MARG_L + LARG - 4, yInicio + 0.8, badgeCor || corBorda);
+      desenhaBadge(badgeText, xBadge, yInicio + 0.8, badgeCor || corBorda);
+      xBadge -= 20; // espaço pro próximo
+    }
+    if (editado) {
+      desenhaBadge("EDITADO", xBadge, yInicio + 0.8, [200, 155, 42]); // âmbar (mesmo do HTML)
     }
 
     // --- Header (tipografia serif, Times Bold) ---
@@ -3375,11 +3406,12 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   const pagAtualizAprov = (patch.pagamentos_atualizados || []).filter(p => aprovacoes[`pag_${p.idx}`] !== false);
   const contribAprov = (patch.contribuinte || patch.endereco) && aprovacoes["contrib"] !== false;
 
-  const fontesNovasAprov = (patch.fontes_novas || []).filter((_, i) => aprovacoes[`fonte_nova_${i}`] !== false);
-  const bensNovosAprov = (patch.bens_novos_aviso || []).filter((_, i) => aprovacoes[`bem_novo_${i}`] !== false);
-  const dividasNovasAprov = (patch.dividas_novas_aviso || []).filter((_, i) => aprovacoes[`divida_nova_${i}`] !== false);
-  const pagNovosAprov = (patch.pagamentos_novos_aviso || []).filter((_, i) => aprovacoes[`pag_novo_${i}`] !== false);
-  const exclNovosAprov = (patch.rendimentos_exclusivos_novos_aviso || []).filter((_, i) => aprovacoes[`excl_novo_${i}`] !== false);
+  // Mantém o índice original do patch (idx) junto com o item — usado pra associar overrides editados pelo contador.
+  const fontesNovasAprov = (patch.fontes_novas || []).map((item, idx) => ({item, idx})).filter(({idx}) => aprovacoes[`fonte_nova_${idx}`] !== false);
+  const bensNovosAprov = (patch.bens_novos_aviso || []).map((item, idx) => ({item, idx})).filter(({idx}) => aprovacoes[`bem_novo_${idx}`] !== false);
+  const dividasNovasAprov = (patch.dividas_novas_aviso || []).map((item, idx) => ({item, idx})).filter(({idx}) => aprovacoes[`divida_nova_${idx}`] !== false);
+  const pagNovosAprov = (patch.pagamentos_novos_aviso || []).map((item, idx) => ({item, idx})).filter(({idx}) => aprovacoes[`pag_novo_${idx}`] !== false);
+  const exclNovosAprov = (patch.rendimentos_exclusivos_novos_aviso || []).map((item, idx) => ({item, idx})).filter(({idx}) => aprovacoes[`excl_novo_${idx}`] !== false);
   const carneLeaoAprov = (patch.rendimentos_pf_carne_leao || []).filter((_, i) => aprovacoes[`pf_${i}`] !== false);
   const depNovosAprov = patch.dependentes_novos_aviso || [];
 
@@ -3404,6 +3436,18 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   };
 
   const motivoManual = "marcado manualmente em REVISAR";
+
+  // Helper: aplica override (do state manualOverrides) por cima de um item do patch
+  // pra que o PDF de Alterações mostre os valores EDITADOS PELO CONTADOR, não os originais da IA.
+  const aplicaOv = (item, chave) => {
+    const ov = manualOverrides[chave];
+    if (!ov) return item;
+    // Items "string" legados viram { resumo: string } antes de mesclar
+    const base = typeof item === "string" ? { resumo: item } : item;
+    return { ...base, ...ov };
+  };
+  const foiEditado = (chave) => !!manualOverrides[chave];
+
   const bensRemoverAprov     = combinarRemovidos(patch.bens_a_remover,                   templateInfo.bens,          "bem_remover",    "bem",    motivoManual);
   const dividasRemoverAprov  = combinarRemovidos(patch.dividas_a_remover,                templateInfo.dividas,       "divida_remover", "divida", motivoManual);
   const depRemoverAprov      = (patch.dependentes_a_remover || []).filter(d => aprovacoes[`dep_remover_${d.idx}`] !== false);
@@ -3515,9 +3559,12 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === FONTES PAGADORAS (alterado / azul) ===
   if (fontesAprov.length > 0) {
     secaoColorida("", `Fontes pagadoras atualizadas`, fontesAprov.length, RGB.azul);
-    for (const f of fontesAprov) {
-      const cnpjF = String(f.cnpj || "").replace(/\D/g, "").padStart(14, "0");
-      const tpl = templateInfo.fontes.find(x => x.cnpj === cnpjF) || {};
+    for (const _f of fontesAprov) {
+      const cnpjF = String(_f.cnpj || "").replace(/\D/g, "").padStart(14, "0");
+      const idxTpl = templateInfo.fontes.findIndex(x => x.cnpj === cnpjF);
+      const tpl = idxTpl >= 0 ? templateInfo.fontes[idxTpl] : {};
+      const chaveOv = `fonte_atualizada_${idxTpl + 1}`;
+      const f = aplicaOv(_f, chaveOv);
       const header = tpl.nome || f.nome || "(sem nome)";
       const pares = [
         ["CNPJ", fmtCNPJ(f.cnpj), "Nome", tpl.nome || f.nome || "—"],
@@ -3526,7 +3573,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
         ["INSS retido (template)", `R$ ${fmtBRL(tpl.inss ?? 0)}`, "INSS retido (atualizado)", `R$ ${fmtBRL(f.inss ?? 0)}`],
         ["IR retido (template)", `R$ ${fmtBRL(tpl.ir_retido ?? 0)}`, "IR retido (atualizado)", `R$ ${fmtBRL(f.ir_retido ?? 0)}`],
       ];
-      renderCard(RGB.azul, RGB.bgAzul, header, f.origem || null, pares, null, "ALTERADO", RGB.azul);
+      renderCard(RGB.azul, RGB.bgAzul, header, f.origem || null, pares, null, "ALTERADO", RGB.azul, foiEditado(chaveOv));
     }
     y += 2;
   }
@@ -3534,7 +3581,9 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === BENS ATUALIZADOS (alterado / azul) ===
   if (bensAprov.length > 0) {
     secaoColorida("", `${bensAprov.length > 1 ? "Bens" : "Bem"} com saldo atualizado`, bensAprov.length, RGB.azul);
-    for (const b of bensAprov) {
+    for (const _b of bensAprov) {
+      const chaveOv = `bem_atualizado_${_b.idx}`;
+      const b = aplicaOv(_b, chaveOv);
       const tpl = templateInfo.bens[b.idx - 1] || {};
       const anoAnt = !isNaN(parseInt(anoCalAtual, 10)) ? String(parseInt(anoCalAtual, 10) - 1) : "anterior";
       const header = `B${b.idx} · ${tpl.discriminacao || "(sem nome)"}`;
@@ -3553,7 +3602,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
       if (b.valor_anterior != null) linhasDestaque.push(`Valor 31/12/${anoAnt} (atualizado): R$ ${fmtBRL(b.valor_anterior)}`);
       if (b.valor_atual != null) linhasDestaque.push(`Valor 31/12/${anoCalAtual} (atualizado): R$ ${fmtBRL(b.valor_atual)}`);
       const destaque = linhasDestaque.join("\n");
-      renderCard(RGB.azul, RGB.bgAzul, header, b.origem || null, pares, destaque, "ALTERADO", RGB.azul);
+      renderCard(RGB.azul, RGB.bgAzul, header, b.origem || null, pares, destaque, "ALTERADO", RGB.azul, foiEditado(chaveOv));
     }
     y += 2;
   }
@@ -3561,7 +3610,9 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === DÍVIDAS ATUALIZADAS (alterado / azul) ===
   if (dividasAprov.length > 0) {
     secaoColorida("", `${dividasAprov.length > 1 ? "Dívidas" : "Dívida"} com saldo atualizado`, dividasAprov.length, RGB.azul);
-    for (const d of dividasAprov) {
+    for (const _d of dividasAprov) {
+      const chaveOv = `divida_atualizada_${_d.idx}`;
+      const d = aplicaOv(_d, chaveOv);
       const tpl = templateInfo.dividas[d.idx - 1] || {};
       const anoAnt = !isNaN(parseInt(anoCalAtual, 10)) ? String(parseInt(anoCalAtual, 10) - 1) : "anterior";
       const header = `V${d.idx} · ${tpl.discriminacao || "(sem nome)"}`;
@@ -3574,7 +3625,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
       if (d.valor_anterior != null) linhasDestaque.push(`Saldo 31/12/${anoAnt} (atualizado): R$ ${fmtBRL(d.valor_anterior)}`);
       if (d.valor_atual != null) linhasDestaque.push(`Saldo 31/12/${anoCalAtual} (atualizado): R$ ${fmtBRL(d.valor_atual)}`);
       if (d.valor_pago != null) linhasDestaque.push(`Valor Pago em ${anoCalAtual} (atualizado): R$ ${fmtBRL(d.valor_pago)}`);
-      renderCard(RGB.azul, RGB.bgAzul, header, d.origem || null, pares, linhasDestaque, "ALTERADO", RGB.azul);
+      renderCard(RGB.azul, RGB.bgAzul, header, d.origem || null, pares, linhasDestaque, "ALTERADO", RGB.azul, foiEditado(chaveOv));
     }
     y += 2;
   }
@@ -3582,14 +3633,16 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === RENDIMENTOS ISENTOS (alterado / azul) ===
   if (isentosAprov.length > 0) {
     secaoColorida("", `${isentosAprov.length > 1 ? "Rendimentos isentos atualizados" : "Rendimento isento atualizado"}`, isentosAprov.length, RGB.azul);
-    for (const r of isentosAprov) {
+    for (const _r of isentosAprov) {
+      const chaveOv = `isento_atualizado_${_r.idx}`;
+      const r = aplicaOv(_r, chaveOv);
       const tpl = templateInfo.rendIsentos[r.idx - 1] || {};
       const header = `I${r.idx} · ${tpl.nome_fonte || "(sem nome)"}`;
       const pares = [
         ["CNPJ", fmtCNPJ(tpl.cnpj_fonte), "Categoria", tpl.descricao || "—"],
         ["Valor (template)", `R$ ${fmtBRL(tpl.valor ?? 0)}`, "Valor (atualizado)", `R$ ${fmtBRL(r.valor ?? 0)}`],
       ];
-      renderCard(RGB.azul, RGB.bgAzul, header, r.origem || null, pares, null, "ALTERADO", RGB.azul);
+      renderCard(RGB.azul, RGB.bgAzul, header, r.origem || null, pares, null, "ALTERADO", RGB.azul, foiEditado(chaveOv));
     }
     y += 2;
   }
@@ -3597,7 +3650,9 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === PAGAMENTOS EFETUADOS ATUALIZADOS (alterado / azul) ===
   if (pagAtualizAprov.length > 0) {
     secaoColorida("", `${pagAtualizAprov.length > 1 ? "Pagamentos efetuados atualizados" : "Pagamento efetuado atualizado"}`, pagAtualizAprov.length, RGB.azul);
-    for (const p of pagAtualizAprov) {
+    for (const _p of pagAtualizAprov) {
+      const chaveOv = `pag_atualizado_${_p.idx}`;
+      const p = aplicaOv(_p, chaveOv);
       const tpl = templateInfo.pagamentos[p.idx - 1] || {};
       const header = `P${p.idx} · ${tpl.nome || "(sem nome)"}`;
       const pares = [
@@ -3605,7 +3660,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
         ["Beneficiário", tpl.nome ?? "—", "Valor Pago (template)", `R$ ${fmtBRL(tpl.valor_pago ?? 0)}`],
       ];
       const destaque = `Valor Pago em ${anoCalAtual} (atualizado): R$ ${fmtBRL(p.valor_pago)}`;
-      renderCard(RGB.azul, RGB.bgAzul, header, p.origem || null, pares, destaque, "ALTERADO", RGB.azul);
+      renderCard(RGB.azul, RGB.bgAzul, header, p.origem || null, pares, destaque, "ALTERADO", RGB.azul, foiEditado(chaveOv));
     }
     y += 2;
   }
@@ -3613,7 +3668,9 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === RENDIMENTOS EXCLUSIVOS ATUALIZADOS (alterado / azul) ===
   if (exclAtualizAprov.length > 0) {
     secaoColorida("", `${exclAtualizAprov.length > 1 ? "Rendimentos exclusivos atualizados" : "Rendimento exclusivo atualizado"}`, exclAtualizAprov.length, RGB.azul);
-    for (const e of exclAtualizAprov) {
+    for (const _e of exclAtualizAprov) {
+      const chaveOv = `excl_atualizado_${_e.idx}`;
+      const e = aplicaOv(_e, chaveOv);
       const tpl = templateInfo.rendExclusivos[e.idx - 1] || {};
       const header = `E${e.idx} · ${tpl.nome_fonte || "(sem nome)"}`;
       const pares = [
@@ -3621,7 +3678,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
         ["Fonte", tpl.nome_fonte ?? "—", "Valor (template)", `R$ ${fmtBRL(tpl.valor ?? 0)}`],
       ];
       const destaque = `Valor (atualizado): R$ ${fmtBRL(e.valor)}`;
-      renderCard(RGB.azul, RGB.bgAzul, header, e.origem || null, pares, destaque, "ALTERADO", RGB.azul);
+      renderCard(RGB.azul, RGB.bgAzul, header, e.origem || null, pares, destaque, "ALTERADO", RGB.azul, foiEditado(chaveOv));
     }
     y += 2;
   }
@@ -3629,14 +3686,16 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === FONTES NOVAS (novo / verde) ===
   if (fontesNovasAprov.length > 0) {
     secaoColorida("", `${fontesNovasAprov.length > 1 ? "Fontes pagadoras novas" : "Fonte pagadora nova"}`, fontesNovasAprov.length, RGB.verde);
-    for (const f of fontesNovasAprov) {
+    for (const {item: _f, idx: idxN} of fontesNovasAprov) {
+      const chaveOv = `fonte_novo_${idxN}`;
+      const f = aplicaOv(_f, chaveOv);
       const header = `+ ${f.nome || "(sem nome)"}`;
       const pares = [
         ["CNPJ", fmtCNPJ(f.cnpj), "Nome", f.nome || "—"],
         ["Rendimentos", `R$ ${fmtBRL(f.rendimentos_tributaveis ?? 0)}`, "13º salário", `R$ ${fmtBRL(f.decimo_terceiro ?? 0)}`],
         ["INSS retido", `R$ ${fmtBRL(f.inss ?? 0)}`, "IR retido", `R$ ${fmtBRL(f.ir_retido ?? 0)}`],
       ];
-      renderCard(RGB.verde, RGB.bgVerde, header, f.origem || null, pares, null, "NOVO", RGB.verde);
+      renderCard(RGB.verde, RGB.bgVerde, header, f.origem || null, pares, null, "NOVO", RGB.verde, foiEditado(chaveOv));
     }
     y += 2;
   }
@@ -3644,7 +3703,9 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === BENS NOVOS (novo / verde) ===
   if (bensNovosAprov.length > 0) {
     secaoColorida("", `${bensNovosAprov.length > 1 ? "Bens novos" : "Bem novo"}`, bensNovosAprov.length, RGB.verde);
-    for (const b of bensNovosAprov) {
+    for (const {item: _b, idx: idxN} of bensNovosAprov) {
+      const chaveOv = `bem_novo_${idxN}`;
+      const b = aplicaOv(_b, chaveOv);
       if (typeof b === "string") {
         ensure(10);
         const yInicio = y;
@@ -3670,7 +3731,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
           pares.push(["CNPJ", b.cnpj ? fmtCNPJ(b.cnpj) : "—", "Banco", b.banco ?? "—"]);
           pares.push(["Agencia", b.agencia ?? "—", "Conta", b.conta ?? "—"]);
         }
-        renderCard(RGB.verde, RGB.bgVerde, header, b.origem || null, pares, null, "NOVO", RGB.verde);
+        renderCard(RGB.verde, RGB.bgVerde, header, b.origem || null, pares, null, "NOVO", RGB.verde, foiEditado(chaveOv));
       }
     }
     y += 2;
@@ -3679,7 +3740,9 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === DÍVIDAS NOVAS (novo / verde) ===
   if (dividasNovasAprov.length > 0) {
     secaoColorida("", "Dívidas novas", dividasNovasAprov.length, RGB.verde);
-    for (const d of dividasNovasAprov) {
+    for (const {item: _d, idx: idxN} of dividasNovasAprov) {
+      const chaveOv = `divida_novo_${idxN}`;
+      const d = aplicaOv(_d, chaveOv);
       if (typeof d === "string") {
         ensure(10);
         const altEstim = 8;
@@ -3696,9 +3759,10 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
         const header = d.resumo || `+ ${d.discriminacao || "(sem nome)"}`;
         const pares = [
           ["Codigo", d.codigo ?? "—", "Discriminacao", d.discriminacao ?? "—"],
-          [`Saldo 31/12/${anoCalAtual}`, `R$ ${fmtBRL(d.valor_atual ?? 0)}`, "Valor Anterior", `R$ ${fmtBRL(d.valor_anterior ?? 0)}`],
+          [`Saldo 31/12/${anoCalAnterior}`, `R$ ${fmtBRL(d.valor_anterior ?? 0)}`, `Saldo 31/12/${anoCalAtual}`, `R$ ${fmtBRL(d.valor_atual ?? 0)}`],
+          [`Valor Pago em ${anoCalAtual}`, `R$ ${fmtBRL(d.valor_pago ?? 0)}`, "Credor", d.credor ?? "—"],
         ];
-        renderCard(RGB.verde, RGB.bgVerde, header, d.origem || null, pares, null, "NOVO", RGB.verde);
+        renderCard(RGB.verde, RGB.bgVerde, header, d.origem || null, pares, null, "NOVO", RGB.verde, foiEditado(chaveOv));
       }
     }
     y += 2;
@@ -3707,7 +3771,9 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === PAGAMENTOS EFETUADOS NOVOS (novo / verde) ===
   if (pagNovosAprov.length > 0) {
     secaoColorida("", `${pagNovosAprov.length > 1 ? "Pagamentos efetuados novos" : "Pagamento efetuado novo"}`, pagNovosAprov.length, RGB.verde);
-    for (const p of pagNovosAprov) {
+    for (const {item: _p, idx: idxN} of pagNovosAprov) {
+      const chaveOv = `pag_novo_${idxN}`;
+      const p = aplicaOv(_p, chaveOv);
       if (typeof p === "string") {
         ensure(10);
         const yInicio = y;
@@ -3728,7 +3794,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
           ["Código", p.codigo ?? "—", "CNPJ/CPF", cnpjCpf ? (cnpjCpf.length === 14 ? fmtCNPJ(cnpjCpf) : fmtCPF(cnpjCpf)) : "—"],
           ["Beneficiário", p.nome ?? "—", "Valor Pago", `R$ ${fmtBRL(p.valor_pago ?? 0)}`],
         ];
-        renderCard(RGB.verde, RGB.bgVerde, header, p.origem || null, pares, null, "NOVO", RGB.verde);
+        renderCard(RGB.verde, RGB.bgVerde, header, p.origem || null, pares, null, "NOVO", RGB.verde, foiEditado(chaveOv));
       }
     }
     y += 2;
@@ -3737,7 +3803,9 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   // === RENDIMENTOS EXCLUSIVOS NOVOS (novo / verde) ===
   if (exclNovosAprov.length > 0) {
     secaoColorida("", `${exclNovosAprov.length > 1 ? "Rendimentos exclusivos novos" : "Rendimento exclusivo novo"}`, exclNovosAprov.length, RGB.verde);
-    for (const e of exclNovosAprov) {
+    for (const {item: _e, idx: idxN} of exclNovosAprov) {
+      const chaveOv = `excl_novo_${idxN}`;
+      const e = aplicaOv(_e, chaveOv);
       if (typeof e === "string") {
         ensure(10);
         const altEstim = 8;
@@ -3757,7 +3825,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
           ["CNPJ Fonte", e.cnpj_fonte ? fmtCNPJ(e.cnpj_fonte) : "—", "CPF Benef.", e.cpf_beneficiario ? fmtCPF(e.cpf_beneficiario) : "—"],
           ["Fonte", e.nome_fonte ?? "—", "Valor", `R$ ${fmtBRL(e.valor ?? 0)}`],
         ];
-        renderCard(RGB.verde, RGB.bgVerde, header, e.origem || null, pares, null, "NOVO", RGB.verde);
+        renderCard(RGB.verde, RGB.bgVerde, header, e.origem || null, pares, null, "NOVO", RGB.verde, foiEditado(chaveOv));
       }
     }
     y += 2;
@@ -4181,7 +4249,7 @@ function mesclarItem(itemTemplate, patchItem) {
 }
 
 // Painel detalhado do template — mostra todos os itens com status semáforo
-function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes = () => {} }) {
+function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes = () => {}, manualOverrides = {}, setManualOverrides = () => {} }) {
   if (!templateInfo) return null;
 
   // Helper: gera os props pro checkbox de remoção manual em itens REVISAR.
@@ -4192,6 +4260,40 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
       marcadoRemover: aprovacoes[chave] === true,
       onMarcarRemover: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
     };
+  };
+
+  // Helper: gera os props pra edição inline (botão Editar) de itens propostos pela IA.
+  // chaveOverride: identificador único, ex "bem_atualizado_3", "fonte_nova_0".
+  // Retorna `onSalvarEdicao` que armazena novos valores em manualOverrides,
+  // e `editado` indicando se já há override pra esse item.
+  const propsEdicao = (chaveOverride) => ({
+    onSalvarEdicao: (novosValores) => setManualOverrides({ ...manualOverrides, [chaveOverride]: novosValores }),
+    editado: !!manualOverrides[chaveOverride],
+  });
+
+  // Helper: aplica override por cima do item (pra refletir edições do contador no card).
+  // Mantém todos os campos do item original e sobrescreve apenas os que foram editados.
+  const mesclarOverride = (item, chaveOverride) => {
+    const ov = manualOverrides[chaveOverride];
+    if (!ov) return item;
+    const base = typeof item === "string" ? { resumo: item } : item;
+    return { ...base, ...ov };
+  };
+
+  // Helper: gera props completas pra ItemCard de item ATUALIZADO pela IA (status=alterado).
+  // Inclui o item já com override aplicado + callbacks de edição. Pra status neutro/revisar,
+  // não habilita edição (Fase 1 só edita itens propostos pela IA).
+  const cardPropsAtualizado = (tipo, idx, status, item) => {
+    if (status !== "alterado") return { item };
+    const chaveOv = `${tipo}_atualizado_${idx}`;
+    return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv) };
+  };
+
+  // Helper: gera props completas pra ItemCard de item NOVO (status=novo).
+  // Edição sempre habilitada — esses itens vieram inteiros da IA, então faz sentido editar.
+  const cardPropsNovo = (tipo, i, item) => {
+    const chaveOv = `${tipo}_novo_${i}`;
+    return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv) };
   };
 
   const Bloco = ({ titulo, itens, vazio }) => {
@@ -4272,14 +4374,14 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
         if (v != null && v !== "") item[k] = v;
       }
     }
-    return <ItemCard key={`b${i}`} item={item} idx={i + 1} prefixo="B" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("bem", i + 1)} />;
+    return <ItemCard key={`b${i}`} idx={i + 1} prefixo="B" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("bem", i + 1)} {...cardPropsAtualizado("bem", i + 1, status, item)} />;
   });
   const bensNovosCards = (patch?.bens_novos_aviso || []).map((b, i) => {
     // suporta tanto string legada quanto objeto novo
     if (typeof b === "string") {
-      return <ItemCard key={`bn${i}`} item={{ resumo: b }} idx={(templateInfo.bens?.length || 0) + i + 1} prefixo="B" getHeader={(x) => x.resumo} status="novo" />;
+      return <ItemCard key={`bn${i}`} idx={(templateInfo.bens?.length || 0) + i + 1} prefixo="B" getHeader={(x) => x.resumo} status="novo" {...cardPropsNovo("bem", i, { resumo: b })} />;
     }
-    return <ItemCard key={`bn${i}`} item={b} idx={(templateInfo.bens?.length || 0) + i + 1} prefixo="B" getHeader={(x) => x.resumo || x.discriminacao} status="novo" />;
+    return <ItemCard key={`bn${i}`} idx={(templateInfo.bens?.length || 0) + i + 1} prefixo="B" getHeader={(x) => x.resumo || x.discriminacao} status="novo" {...cardPropsNovo("bem", i, b)} />;
   });
 
   // Dívidas — mesma lógica dos bens (literais + projetado se há patch)
@@ -4308,11 +4410,11 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
         if (v != null && v !== "") item[k] = v;
       }
     }
-    return <ItemCard key={`d${i}`} item={item} idx={i + 1} prefixo="V" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("divida", i + 1)} />;
+    return <ItemCard key={`d${i}`} idx={i + 1} prefixo="V" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("divida", i + 1)} {...cardPropsAtualizado("divida", i + 1, status, item)} />;
   });
   const dividasNovasCards = (patch?.dividas_novas_aviso || []).map((d, i) => {
-    if (typeof d === "string") return <ItemCard key={`dn${i}`} item={{ resumo: d }} idx={(templateInfo.dividas?.length || 0) + i + 1} prefixo="V" getHeader={(x) => x.resumo} status="novo" />;
-    return <ItemCard key={`dn${i}`} item={d} idx={(templateInfo.dividas?.length || 0) + i + 1} prefixo="V" getHeader={(x) => x.resumo || x.discriminacao} status="novo" />;
+    if (typeof d === "string") return <ItemCard key={`dn${i}`} idx={(templateInfo.dividas?.length || 0) + i + 1} prefixo="V" getHeader={(x) => x.resumo} status="novo" {...cardPropsNovo("divida", i, { resumo: d })} />;
+    return <ItemCard key={`dn${i}`} idx={(templateInfo.dividas?.length || 0) + i + 1} prefixo="V" getHeader={(x) => x.resumo || x.discriminacao} status="novo" {...cardPropsNovo("divida", i, d)} />;
   });
 
   // Fontes pagadoras
@@ -4327,10 +4429,10 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
       inss: patchItem?.inss ?? f.inss,
       ir_retido: patchItem?.ir_retido ?? f.ir_retido,
     }, patchItem);
-    return <ItemCard key={`f${i}`} item={item} idx={i + 1} prefixo="F" getHeader={(x) => x.resumo} status={status} />;
+    return <ItemCard key={`f${i}`} idx={i + 1} prefixo="F" getHeader={(x) => x.resumo} status={status} {...cardPropsAtualizado("fonte", i + 1, status, item)} />;
   });
   const fontesNovasCards = (patch?.fontes_novas || []).map((f, i) => (
-    <ItemCard key={`fn${i}`} item={f} idx={(templateInfo.fontes?.length || 0) + i + 1} prefixo="F" getHeader={(x) => x.resumo || `${x.nome} · ${fmtCNPJ(x.cnpj)}`} status="novo" />
+    <ItemCard key={`fn${i}`} idx={(templateInfo.fontes?.length || 0) + i + 1} prefixo="F" getHeader={(x) => x.resumo || `${x.nome} · ${fmtCNPJ(x.cnpj)}`} status="novo" {...cardPropsNovo("fonte", i, f)} />
   ));
 
   // Dependentes
@@ -4361,7 +4463,7 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
       valor_anterior: r.valor,
       valor: patchItem?.valor ?? r.valor,
     }, patchItem);
-    return <ItemCard key={`ri${i}`} item={item} idx={i + 1} prefixo="RI" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("isento", i + 1)} />;
+    return <ItemCard key={`ri${i}`} idx={i + 1} prefixo="RI" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("isento", i + 1)} {...cardPropsAtualizado("isento", i + 1, status, item)} />;
   });
 
   const pagamentosCards = (templateInfo.pagamentos || []).map((p, i) => {
@@ -4376,11 +4478,11 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     if (patchItem && patchItem.valor_pago != null) {
       item.valor_pago_atualizado = patchItem.valor_pago;
     }
-    return <ItemCard key={`p${i}`} item={item} idx={i + 1} prefixo="P" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("pag", i + 1)} />;
+    return <ItemCard key={`p${i}`} idx={i + 1} prefixo="P" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("pag", i + 1)} {...cardPropsAtualizado("pag", i + 1, status, item)} />;
   });
   const pagamentosNovosCards = (patch?.pagamentos_novos_aviso || []).map((p, i) => {
-    if (typeof p === "string") return <ItemCard key={`pn${i}`} item={{ resumo: p }} idx={(templateInfo.pagamentos?.length || 0) + i + 1} prefixo="P" getHeader={(x) => x.resumo} status="novo" />;
-    return <ItemCard key={`pn${i}`} item={p} idx={(templateInfo.pagamentos?.length || 0) + i + 1} prefixo="P" getHeader={(x) => x.resumo || x.nome || `Cód ${x.codigo}`} status="novo" />;
+    if (typeof p === "string") return <ItemCard key={`pn${i}`} idx={(templateInfo.pagamentos?.length || 0) + i + 1} prefixo="P" getHeader={(x) => x.resumo} status="novo" {...cardPropsNovo("pag", i, { resumo: p })} />;
+    return <ItemCard key={`pn${i}`} idx={(templateInfo.pagamentos?.length || 0) + i + 1} prefixo="P" getHeader={(x) => x.resumo || x.nome || `Cód ${x.codigo}`} status="novo" {...cardPropsNovo("pag", i, p)} />;
   });
 
   const rendExclusivosCards = (templateInfo.rendExclusivos || []).map((e, i) => {
@@ -4394,11 +4496,11 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
       valor: e.valor,
     };
     if (patchItem && patchItem.valor != null) item.valor_atualizado = patchItem.valor;
-    return <ItemCard key={`re${i}`} item={item} idx={i + 1} prefixo="E" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("excl", i + 1)} />;
+    return <ItemCard key={`re${i}`} idx={i + 1} prefixo="E" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("excl", i + 1)} {...cardPropsAtualizado("excl", i + 1, status, item)} />;
   });
   const rendExclusivosNovosCards = (patch?.rendimentos_exclusivos_novos_aviso || []).map((e, i) => {
-    if (typeof e === "string") return <ItemCard key={`ren${i}`} item={{ resumo: e }} idx={(templateInfo.rendExclusivos?.length || 0) + i + 1} prefixo="E" getHeader={(x) => x.resumo} status="novo" />;
-    return <ItemCard key={`ren${i}`} item={e} idx={(templateInfo.rendExclusivos?.length || 0) + i + 1} prefixo="E" getHeader={(x) => x.resumo || x.nome_fonte || `Cód ${x.codigo}`} status="novo" />;
+    if (typeof e === "string") return <ItemCard key={`ren${i}`} idx={(templateInfo.rendExclusivos?.length || 0) + i + 1} prefixo="E" getHeader={(x) => x.resumo} status="novo" {...cardPropsNovo("excl", i, { resumo: e })} />;
+    return <ItemCard key={`ren${i}`} idx={(templateInfo.rendExclusivos?.length || 0) + i + 1} prefixo="E" getHeader={(x) => x.resumo || x.nome_fonte || `Cód ${x.codigo}`} status="novo" {...cardPropsNovo("excl", i, e)} />;
   });
 
   // Detecta se há algum item já zerado no template (precisa de revisão mesmo sem patch da IA)
@@ -4531,6 +4633,58 @@ function BotaoCopiar({ texto, label = "Copiar", size = 11 }) {
   );
 }
 
+// Campo editável: detecta automaticamente o tipo apropriado (texto / dinheiro / textarea)
+// e renderiza o input correspondente. Usado dentro do modo de edição do ItemCard.
+function EditableField({ campo, valor, onChange, autoFocus }) {
+  const isMonetario = ehCampoMonetario(campo);
+  const valorStr = valor == null ? "" : String(valor);
+  // Heurística: textarea para campos de texto livre longos (discriminacao, observacoes)
+  const isTextarea = !isMonetario && /discrimina|observa|categoria_desc|natureza/i.test(campo);
+  const baseStyle = {
+    fontSize: 12,
+    padding: "4px 6px",
+    border: `1px solid ${COR_BORDA}`,
+    borderRadius: 3,
+    background: "#fff",
+    color: COR_TINTA,
+    fontFamily: isMonetario ? "'IBM Plex Mono', monospace" : "inherit",
+    width: "100%",
+    boxSizing: "border-box",
+  };
+  if (isMonetario) {
+    return (
+      <input
+        type="number"
+        step="0.01"
+        value={Number.isFinite(Number(valor)) ? Number(valor) : 0}
+        onChange={(e) => onChange(e.target.value === "" ? 0 : Number(e.target.value))}
+        autoFocus={autoFocus}
+        style={baseStyle}
+      />
+    );
+  }
+  if (isTextarea) {
+    return (
+      <textarea
+        value={valorStr}
+        onChange={(e) => onChange(e.target.value)}
+        autoFocus={autoFocus}
+        rows={3}
+        style={{ ...baseStyle, resize: "vertical", minHeight: 60 }}
+      />
+    );
+  }
+  return (
+    <input
+      type="text"
+      value={valorStr}
+      onChange={(e) => onChange(e.target.value)}
+      autoFocus={autoFocus}
+      style={baseStyle}
+    />
+  );
+}
+
 function KV({ campo, valor, monetario, copiavel = true }) {
   if (valor == null || valor === "" || valor === 0 && monetario === false) return null;
   const isMon = monetario !== undefined ? monetario : ehCampoMonetario(campo);
@@ -4577,7 +4731,11 @@ const STATUS_CONFIG = {
 };
 
 // Card de um item da lista — mostra header + metadados + todos os outros campos
-function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", marcadoRemover, onMarcarRemover }) {
+// Quando recebe `onSalvarEdicao`, o card ganha botão "Editar" que expande inline
+// pra um form com todos os campos editáveis. Ao salvar, chama o callback com os
+// novos valores. Quando `editado=true`, mostra badge âmbar "EDITADO" indicando
+// que o contador sobrescreveu os valores propostos pela IA.
+function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", marcadoRemover, onMarcarRemover, onSalvarEdicao, editado }) {
   const skip = new Set(["origem", "_idx", ...ignoreKeys]);
   const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.neutro;
   const corBorda = color || cfg.borda;
@@ -4586,9 +4744,42 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
     ([k, v]) => !skip.has(k) && k !== "resumo" && v != null && v !== ""
   );
   const textoCompleto = formatarItemParaCopia(item, ignoreKeys);
-  // Checkbox de remoção manual: só aparece em itens REVISAR onde o componente pai
-  // forneceu o callback (bens, dívidas, pagamentos, rend. isentos, rend. exclusivos).
   const mostrarCheckRemover = status === "revisar" && typeof onMarcarRemover === "function";
+  const podeEditar = typeof onSalvarEdicao === "function";
+
+  const [editando, setEditando] = useState(false);
+  const [valoresEdicao, setValoresEdicao] = useState({});
+
+  // Lista de campos do form de edição: todos os campos do item, exceto os ignorados,
+  // mais "resumo" se existir (pra o contador poder editar o título do card).
+  const camposEditaveis = Object.entries(item).filter(
+    ([k]) => !skip.has(k) && k !== "resumo"
+  );
+
+  const iniciarEdicao = () => {
+    const vals = {};
+    for (const [k, v] of camposEditaveis) vals[k] = v;
+    setValoresEdicao(vals);
+    setEditando(true);
+  };
+
+  const cancelarEdicao = () => {
+    setEditando(false);
+    setValoresEdicao({});
+  };
+
+  const salvarEdicao = () => {
+    // Normaliza: remove campos vazios pra não poluir o override
+    const normalizado = {};
+    for (const [k, v] of Object.entries(valoresEdicao)) {
+      if (v == null || v === "") continue;
+      normalizado[k] = v;
+    }
+    onSalvarEdicao(normalizado);
+    setEditando(false);
+    setValoresEdicao({});
+  };
+
   return (
     <div style={{
       padding: "12px 14px",
@@ -4612,20 +4803,114 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
               textTransform: "uppercase",
             }}>{cfg.badge}</span>
           )}
+          {editado && (
+            <span style={{
+              background: COR_AMBAR,
+              color: "#fff",
+              fontSize: 9,
+              fontWeight: 600,
+              letterSpacing: 0.6,
+              padding: "2px 6px",
+              borderRadius: 2,
+              textTransform: "uppercase",
+            }}>Editado</span>
+          )}
         </div>
-        <BotaoCopiar texto={textoCompleto} label="Copiar item completo" size={12} />
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          {podeEditar && !editando && (
+            <button
+              onClick={iniciarEdicao}
+              title="Editar campos deste item"
+              style={{
+                border: `1px solid ${COR_BORDA}`,
+                background: "transparent",
+                color: COR_SUTIL,
+                fontSize: 11,
+                padding: "2px 8px",
+                borderRadius: 3,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COR_TINTA; e.currentTarget.style.color = COR_TINTA; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COR_BORDA; e.currentTarget.style.color = COR_SUTIL; }}
+            >
+              ✎ Editar
+            </button>
+          )}
+          <BotaoCopiar texto={textoCompleto} label="Copiar item completo" size={12} />
+        </div>
       </div>
       {item.origem && (
         <div style={{ fontSize: 11, color: "#8a7f6e", fontStyle: "italic", marginBottom: 6 }}>
           {item.origem}
         </div>
       )}
-      {camposExtra.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "3px 16px", marginTop: 6 }}>
-          {camposExtra.map(([k, v]) => <KV key={k} campo={k} valor={v} />)}
+
+      {/* MODO EDIÇÃO — form inline substitui os KVs */}
+      {editando ? (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${COR_BORDA}` }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px" }}>
+            {camposEditaveis.map(([k, v]) => {
+              // Campos textarea (discriminação) ocupam linha inteira
+              const isTextarea = !ehCampoMonetario(k) && /discrimina|observa|categoria|natureza/i.test(k);
+              return (
+                <div key={k} style={isTextarea ? { gridColumn: "1 / -1" } : {}}>
+                  <label style={{ display: "block", fontSize: 11, color: COR_SUTIL, marginBottom: 3 }}>
+                    {labelLegivel(k)}
+                  </label>
+                  <EditableField
+                    campo={k}
+                    valor={valoresEdicao[k]}
+                    onChange={(novo) => setValoresEdicao({ ...valoresEdicao, [k]: novo })}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
+            <button
+              onClick={cancelarEdicao}
+              style={{
+                border: `1px solid ${COR_BORDA}`,
+                background: "transparent",
+                color: COR_SUTIL,
+                fontSize: 12,
+                padding: "5px 14px",
+                borderRadius: 3,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={salvarEdicao}
+              style={{
+                border: `1px solid ${corBorda}`,
+                background: corBorda,
+                color: "#fff",
+                fontSize: 12,
+                fontWeight: 600,
+                padding: "5px 14px",
+                borderRadius: 3,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Salvar edição
+            </button>
+          </div>
         </div>
+      ) : (
+        // MODO LEITURA — exibe os KVs como antes
+        camposExtra.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "3px 16px", marginTop: 6 }}>
+            {camposExtra.map(([k, v]) => <KV key={k} campo={k} valor={v} />)}
+          </div>
+        )
       )}
-      {mostrarCheckRemover && (
+
+      {mostrarCheckRemover && !editando && (
         <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${COR_BORDA}` }}>
           <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, cursor: "pointer", color: COR_VERMELHO, fontWeight: 500 }}>
             <input
@@ -5118,6 +5403,10 @@ function EstudioIRPFInner() {
   const [patch, setPatch] = useState(null);
   const [dadosExtraidos, setDadosExtraidos] = useState(null); // modo sem template
   const [aprovacoes, setAprovacoes] = useState({});
+  // Edições manuais do contador sobre itens propostos pela IA (Fase 1).
+  // Chave: `${categoria}_${chave}` (ex: "bem_atualizado_3", "bem_novo_0", "fonte_atualizada_52318822000119")
+  // Valor: subset dos campos do item, contendo só o que o contador sobrescreveu.
+  const [manualOverrides, setManualOverrides] = useState({});
   const [showAjuda, setShowAjuda] = useState(false);
 
   // === Fluxo copy/paste com IA web (sem API) ===
@@ -5447,7 +5736,7 @@ function EstudioIRPFInner() {
 
   function baixarDbk() {
     try {
-      const { conteudo, aplicadas } = aplicarPatch(templateInfo, patch, aprovacoes);
+      const { conteudo, aplicadas } = aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides);
       const bytes = encodeLatin1(conteudo);
       const blob = new Blob([bytes], { type: "application/octet-stream" });
       const cpf = (templateInfo.contribuinte?.cpf || "00000000000").replace(/\D/g, "").padStart(11, "0");
@@ -5489,7 +5778,7 @@ function EstudioIRPFInner() {
     if (!templateInfo || !patch) return;
     try {
       setStatusMsg("Gerando PDF de alterações...");
-      const doc = await gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo);
+      const doc = await gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo, manualOverrides);
       const cpf = (templateInfo.contribuinte?.cpf || "sem-cpf").replace(/\D/g, "");
       const anoDecl = templateInfo.anoDeclaracao || "0000";
       const anoCal = templateInfo.anoCalendario || "0000";
@@ -5723,7 +6012,7 @@ function EstudioIRPFInner() {
           )}
 
           {/* Conteúdo detalhado do template — com semáforo de cores quando há patch */}
-          {templateInfo && <ConteudoTemplate templateInfo={templateInfo} patch={patch} aprovacoes={aprovacoes} setAprovacoes={setAprovacoes} />}
+          {templateInfo && <ConteudoTemplate templateInfo={templateInfo} patch={patch} aprovacoes={aprovacoes} setAprovacoes={setAprovacoes} manualOverrides={manualOverrides} setManualOverrides={setManualOverrides} />}
 
           {templateErro && (
             <div style={{ marginTop: 14, padding: "10px 14px", background: "#fbeae6", border: `1px solid ${COR_VERMELHO}`, fontSize: 12, color: COR_VERMELHO }}>
