@@ -1780,7 +1780,7 @@ function gerarRelatorioHtml(templateInfo, patch, reciboInfo) {
     if (!tpl) return "";
     return `<tr>
       <td>B${b.idx} [${tpl.grupo}]</td>
-      <td>${tpl.discriminacao.slice(0, 80)}</td>
+      <td>${(tpl.discriminacao || "").slice(0, 80)}</td>
       <td class="mono right">R$ ${fmtBRL(tpl.valor_atual)}</td>
       <td class="mono right novo">R$ ${fmtBRL(b.valor_atual)}</td>
     </tr>`;
@@ -1791,7 +1791,7 @@ function gerarRelatorioHtml(templateInfo, patch, reciboInfo) {
     if (!tpl) return "";
     return `<tr>
       <td>V${d.idx}</td>
-      <td>${tpl.discriminacao.slice(0, 80)}</td>
+      <td>${(tpl.discriminacao || "").slice(0, 80)}</td>
       <td class="mono right">R$ ${fmtBRL(tpl.valor_atual)}</td>
       <td class="mono right novo">R$ ${fmtBRL(d.valor_atual)}</td>
     </tr>`;
@@ -5841,7 +5841,7 @@ function EstudioIRPFInner() {
                   if (!tpl) return null;
                   const anoCal = templateInfo.anoCalendario || "";
                   const anoCalAnt = anoCal ? String(parseInt(anoCal, 10) - 1) : "";
-                  const labelTexto = b.resumo || `B${b.idx} [grupo ${tpl.grupo}] — ${tpl.discriminacao.slice(0, 90)}${tpl.discriminacao.length > 90 ? "..." : ""}`;
+                  const labelTexto = b.resumo || `B${b.idx} [grupo ${tpl.grupo}] — ${(tpl.discriminacao || "").slice(0, 90)}${((tpl.discriminacao || "").length) > 90 ? "..." : ""}`;
                   const linhasCopia = [
                     `Bem B${b.idx} (grupo ${tpl.grupo}${tpl.codigo ? `/cód ${tpl.codigo}` : ""})`,
                     `Discriminação: ${tpl.discriminacao}`,
@@ -5897,7 +5897,7 @@ function EstudioIRPFInner() {
                   if (!tpl) return null;
                   const anoCal = templateInfo.anoCalendario || "";
                   const anoCalAnt = anoCal ? String(parseInt(anoCal, 10) - 1) : "";
-                  const labelTexto = d.resumo || `V${d.idx} — ${tpl.discriminacao.slice(0, 90)}${tpl.discriminacao.length > 90 ? "..." : ""}`;
+                  const labelTexto = d.resumo || `V${d.idx} — ${(tpl.discriminacao || "").slice(0, 90)}${((tpl.discriminacao || "").length) > 90 ? "..." : ""}`;
                   const linhasCopia = [
                     `Dívida V${d.idx} (código ${tpl.codigo})`,
                     `Discriminação: ${tpl.discriminacao}`,
@@ -5986,7 +5986,7 @@ function EstudioIRPFInner() {
                       <Checkbox
                         checked={aprovacoes[`isento_${r.idx}`] !== false}
                         onChange={(v) => setAprovacoes({ ...aprovacoes, [`isento_${r.idx}`]: v })}
-                        label={`I${r.idx} — ${tpl.nome_fonte} · ${tpl.descricao.slice(0, 60)}`}
+                        label={`I${r.idx} — ${tpl.nome_fonte || ""} · ${(tpl.descricao || "").slice(0, 60)}`}
                         sub={r.origem}
                       />
                       <div style={{ marginLeft: 26, marginTop: 4 }}>
@@ -6021,7 +6021,7 @@ function EstudioIRPFInner() {
                           <Checkbox
                             checked={aprovacoes[`pag_${p.idx}`] !== false}
                             onChange={(v) => setAprovacoes({ ...aprovacoes, [`pag_${p.idx}`]: v })}
-                            label={`P${p.idx} — [cód ${tpl.codigo}] ${tpl.nome.slice(0, 70)}`}
+                            label={`P${p.idx} — [cód ${tpl.codigo}] ${(tpl.nome || "").slice(0, 70)}`}
                             sub={p.origem}
                           />
                         </div>
@@ -6054,7 +6054,7 @@ function EstudioIRPFInner() {
                       <Checkbox
                         checked={aprovacoes[`pag_remover_${p.idx}`] !== false}
                         onChange={(v) => setAprovacoes({ ...aprovacoes, [`pag_remover_${p.idx}`]: v })}
-                        label={`P${p.idx} — [cód ${tpl.codigo}] ${tpl.nome.slice(0, 70)}`}
+                        label={`P${p.idx} — [cód ${tpl.codigo}] ${(tpl.nome || "").slice(0, 70)}`}
                         sub={p.motivo || "valor R$ 0,00"}
                       />
                     </div>
@@ -6077,7 +6077,7 @@ function EstudioIRPFInner() {
                       <Checkbox
                         checked={aprovacoes[`excl_${e.idx}`] !== false}
                         onChange={(v) => setAprovacoes({ ...aprovacoes, [`excl_${e.idx}`]: v })}
-                        label={`E${e.idx} — [cód ${tpl.codigo}] ${tpl.nome_fonte.slice(0, 65)}`}
+                        label={`E${e.idx} — [cód ${tpl.codigo}] ${(tpl.nome_fonte || "").slice(0, 65)}`}
                         sub={e.origem}
                       />
                       <div style={{ marginLeft: 26, marginTop: 4, display: "flex", alignItems: "center" }}>
@@ -6104,7 +6104,7 @@ function EstudioIRPFInner() {
                       <Checkbox
                         checked={aprovacoes[`excl_remover_${e.idx}`] !== false}
                         onChange={(v) => setAprovacoes({ ...aprovacoes, [`excl_remover_${e.idx}`]: v })}
-                        label={`E${e.idx} — [cód ${tpl.codigo}] ${tpl.nome_fonte.slice(0, 65)}`}
+                        label={`E${e.idx} — [cód ${tpl.codigo}] ${(tpl.nome_fonte || "").slice(0, 65)}`}
                         sub={e.motivo}
                       />
                     </div>
