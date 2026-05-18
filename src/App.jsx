@@ -3086,6 +3086,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   const doc = new jsPDF({ unit: "mm", format: "a4" });
 
   const anoCalAtual = templateInfo.anoCalendario || "atual";
+  const anoCalAnterior = anoCalAtual && /^\d{4}$/.test(anoCalAtual) ? String(parseInt(anoCalAtual, 10) - 1) : "anterior";
   const anoDecl = templateInfo.anoDeclaracao || "atual";
 
   // Paleta — mesmas cores semânticas do estúdio web
@@ -3107,6 +3108,23 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   const setText = (rgb) => doc.setTextColor(rgb[0], rgb[1], rgb[2]);
   const setDraw = (rgb) => doc.setDrawColor(rgb[0], rgb[1], rgb[2]);
   const setFill = (rgb) => doc.setFillColor(rgb[0], rgb[1], rgb[2]);
+
+  // Desenha badge retangular pequeno (cor sólida + texto branco em CAIXA ALTA).
+  // Replica os badges do HTML (REMOVER · REVISAR · ALTERADO · NOVO · CARNÊ-LEÃO).
+  const desenhaBadge = (texto, xDireita, yTopo, corFundo) => {
+    if (!texto) return;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    const textoUpper = texto.toUpperCase();
+    const padX = 1.6;
+    const w = doc.getTextWidth(textoUpper) + padX * 2;
+    const h = 3.6;
+    setFill(corFundo);
+    doc.rect(xDireita - w, yTopo, w, h, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.text(textoUpper, xDireita - w + padX, yTopo + h - 1.1);
+    setText(RGB.tinta);
+  };
 
   const MARG_L = 18, MARG_R = 18, LARG = 210 - MARG_L - MARG_R, BOTTOM = 280;
   const X_DIFF_ANT = MARG_L + 88;
@@ -3136,21 +3154,25 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
 
   const ensure = (h) => { if (y + h > BOTTOM) novaPagina(); };
 
-  // Título de seção com barra colorida lateral
+  // Título de seção com barra colorida lateral + tipografia serif + linha sutil abaixo
   const secaoColorida = (numero, titulo, qtd, cor) => {
-    ensure(20);
-    y += 3;
+    ensure(24);
+    y += 5;
     setFill(cor);
-    doc.rect(MARG_L, y - 4, 1.5, 12, "F");
+    doc.rect(MARG_L, y - 4, 2.5, 13, "F");
     setText(cor);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(13);
-    doc.text(`${titulo}`, MARG_L + 4, y + 1);
+    doc.setFont("times", "bold");
+    doc.setFontSize(15);
+    doc.text(`${titulo}`, MARG_L + 5.5, y + 1.5);
     setText(RGB.sutil);
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
-    doc.text(`${qtd} ${qtd === 1 ? "item" : "itens"}`, MARG_L + 4, y + 6);
-    y += 12;
+    doc.setFontSize(8.5);
+    doc.text(`${qtd} ${qtd === 1 ? "item" : "itens"}`, MARG_L + 5.5, y + 6.5);
+    // linha sutil de separação abaixo
+    setDraw(RGB.linha);
+    doc.setLineWidth(0.2);
+    doc.line(MARG_L, y + 10, 210 - MARG_R, y + 10);
+    y += 15;
     setText(RGB.tinta);
   };
 
@@ -3204,24 +3226,27 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
     doc.rect(MARG_L, cardCtx.yInicio - 3, 1.2, altura + 3, "F");
   };
 
-  // Card completo com header + origem + pares 2-col + linha de destaque opcional
+  // Card completo com header + origem + pares 2-col + linha de destaque opcional + badge
   // pares: array de [label1, valor1, label2, valor2] — cada elemento é uma linha
   // linhaDestaque: string, array de strings ou null — aparece em negrito azul no fim
-  const renderCard = (corBorda, bgCor, header, origem, pares, linhaDestaque) => {
-    const FONT_HEADER = 10;
-    const FONT_ORIGEM = 7.5;
+  // badgeText/badgeCor: opcional — desenha badge no canto direito do header
+  const renderCard = (corBorda, bgCor, header, origem, pares, linhaDestaque, badgeText, badgeCor) => {
+    const FONT_HEADER = 11;
+    const FONT_ORIGEM = 7.8;
     const FONT_CAMPO = 8.5;
     const FONT_DESTAQUE = 10.5;
-    const LH_HEADER = 4.5;
+    const LH_HEADER = 4.8;
     const LH_ORIGEM = 3.8;
-    const LH_CAMPO = 4.5;
+    const LH_CAMPO = 4.6;
     const LH_DESTAQUE = 5;
-    const X_LBL1 = MARG_L + 5;
-    const X_LBL2 = MARG_L + (LARG / 2) + 2;
-    const X_VAL1 = MARG_L + 36;
-    const X_VAL2 = MARG_L + (LARG / 2) + 33;
-    const COL1_W = (LARG / 2) - 36 - 2;
-    const COL2_W = (LARG / 2) - 33 - 4;
+    const X_LBL1 = MARG_L + 6;
+    const X_LBL2 = MARG_L + (LARG / 2) + 3;
+    const X_VAL1 = MARG_L + 37;
+    const X_VAL2 = MARG_L + (LARG / 2) + 34;
+    const COL1_W = (LARG / 2) - 37 - 3;
+    const COL2_W = (LARG / 2) - 34 - 4;
+    // Reserva espaço pro badge no header (à direita)
+    const RESERVA_BADGE = badgeText ? 22 : 0;
 
     // Normalizar linhaDestaque pra array
     const destaqueLinhas = linhaDestaque
@@ -3229,14 +3254,14 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
       : [];
 
     // --- Medir altura ---
+    doc.setFont("times", "bold");
     doc.setFontSize(FONT_HEADER);
-    doc.setFont("helvetica", "bold");
-    const lsHeader = doc.splitTextToSize(header, LARG - 8);
+    const lsHeader = doc.splitTextToSize(header, LARG - 10 - RESERVA_BADGE);
     let alturaH = lsHeader.length * LH_HEADER;
     let alturaO = 0;
     if (origem) {
       doc.setFontSize(FONT_ORIGEM);
-      const lsOrigem = doc.splitTextToSize(origem, LARG - 8);
+      const lsOrigem = doc.splitTextToSize(origem, LARG - 10);
       alturaO = lsOrigem.length * LH_ORIGEM;
     }
     doc.setFont("helvetica", "normal");
@@ -3250,24 +3275,29 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
     }
     const alturaPares = paresMed.reduce((acc, p) => acc + p.nlin * LH_CAMPO, 0);
     let alturaD = 0;
-    if (destaqueLinhas.length) alturaD = 2 + destaqueLinhas.length * LH_DESTAQUE;
-    const alturaTotal = 2 + alturaH + (alturaO ? alturaO + 1 : 0) + 3 + alturaPares + alturaD + 3;
+    if (destaqueLinhas.length) alturaD = 3 + destaqueLinhas.length * LH_DESTAQUE;
+    const alturaTotal = 3 + alturaH + (alturaO ? alturaO + 1 : 0) + 4 + alturaPares + alturaD + 4;
 
-    ensure(alturaTotal + 4);
+    ensure(alturaTotal + 5);
     const yInicio = y;
 
-    // --- Desenhar bg ---
+    // --- Desenhar bg + borda esquerda colorida ---
     setFill(bgCor);
     doc.rect(MARG_L, yInicio - 1, LARG, alturaTotal, "F");
     setFill(corBorda);
-    doc.rect(MARG_L, yInicio - 1, 1.2, alturaTotal, "F");
+    doc.rect(MARG_L, yInicio - 1, 1.5, alturaTotal, "F");
 
-    // --- Header ---
-    y += 1;
-    doc.setFont("helvetica", "bold");
+    // --- Badge no canto superior direito ---
+    if (badgeText) {
+      desenhaBadge(badgeText, MARG_L + LARG - 4, yInicio + 0.8, badgeCor || corBorda);
+    }
+
+    // --- Header (tipografia serif, Times Bold) ---
+    y += 2;
+    doc.setFont("times", "bold");
     doc.setFontSize(FONT_HEADER);
     setText(RGB.tinta);
-    doc.text(lsHeader, MARG_L + 5, y + 2);
+    doc.text(lsHeader, MARG_L + 6, y + 2.5);
     y += alturaH;
 
     // --- Origem ---
@@ -3275,12 +3305,12 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
       doc.setFont("helvetica", "italic");
       doc.setFontSize(FONT_ORIGEM);
       setText(RGB.sutil);
-      const lsOrigem = doc.splitTextToSize(origem, LARG - 8);
-      doc.text(lsOrigem, MARG_L + 5, y + 2);
+      const lsOrigem = doc.splitTextToSize(origem, LARG - 10);
+      doc.text(lsOrigem, MARG_L + 6, y + 2);
       y += alturaO + 1;
     }
 
-    y += 3;
+    y += 4;
 
     // --- Pares 2 colunas ---
     doc.setFont("helvetica", "normal");
@@ -3297,17 +3327,17 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
 
     // --- Linha(s) de destaque ---
     if (destaqueLinhas.length) {
-      y += 2;
+      y += 3;
       doc.setFont("helvetica", "bold");
       doc.setFontSize(FONT_DESTAQUE);
       setText(corBorda);
       for (const linha of destaqueLinhas) {
-        doc.text(linha, MARG_L + 5, y);
+        doc.text(linha, MARG_L + 6, y);
         y += LH_DESTAQUE;
       }
     }
 
-    y = yInicio + alturaTotal + 4;
+    y = yInicio + alturaTotal + 6;
   };
 
   // === TÍTULO PRINCIPAL ===
@@ -3315,20 +3345,21 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
   doc.text("ESTÚDIO WEB IRPF", MARG_L, y);
-  y += 10;
+  y += 11;
   setText(RGB.tinta);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(24);
+  doc.setFont("times", "bold");
+  doc.setFontSize(28);
   doc.text("Relatório de alterações", MARG_L, y);
-  y += 10;
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(12);
+  y += 11;
+  doc.setFont("times", "italic");
+  doc.setFontSize(13);
   doc.text(templateInfo.contribuinte?.nome || "—", MARG_L, y);
-  y += 5.5;
+  y += 6;
+  doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   setText(RGB.sutil);
   doc.text(`CPF ${fmtCPF(templateInfo.contribuinte?.cpf)}  ·  declaração ${anoDecl} · ano-calendário ${anoCalAtual}  ·  gerado em ${new Date().toLocaleDateString("pt-BR")}`, MARG_L, y);
-  y += 12;
+  y += 14;
   setText(RGB.tinta);
 
   // === Calcular itens aprovados ===
@@ -3495,7 +3526,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
         ["INSS retido (template)", `R$ ${fmtBRL(tpl.inss ?? 0)}`, "INSS retido (atualizado)", `R$ ${fmtBRL(f.inss ?? 0)}`],
         ["IR retido (template)", `R$ ${fmtBRL(tpl.ir_retido ?? 0)}`, "IR retido (atualizado)", `R$ ${fmtBRL(f.ir_retido ?? 0)}`],
       ];
-      renderCard(RGB.azul, RGB.bgAzul, header, f.origem || null, pares, null);
+      renderCard(RGB.azul, RGB.bgAzul, header, f.origem || null, pares, null, "ALTERADO", RGB.azul);
     }
     y += 2;
   }
@@ -3522,7 +3553,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
       if (b.valor_anterior != null) linhasDestaque.push(`Valor 31/12/${anoAnt} (atualizado): R$ ${fmtBRL(b.valor_anterior)}`);
       if (b.valor_atual != null) linhasDestaque.push(`Valor 31/12/${anoCalAtual} (atualizado): R$ ${fmtBRL(b.valor_atual)}`);
       const destaque = linhasDestaque.join("\n");
-      renderCard(RGB.azul, RGB.bgAzul, header, b.origem || null, pares, destaque);
+      renderCard(RGB.azul, RGB.bgAzul, header, b.origem || null, pares, destaque, "ALTERADO", RGB.azul);
     }
     y += 2;
   }
@@ -3543,7 +3574,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
       if (d.valor_anterior != null) linhasDestaque.push(`Saldo 31/12/${anoAnt} (atualizado): R$ ${fmtBRL(d.valor_anterior)}`);
       if (d.valor_atual != null) linhasDestaque.push(`Saldo 31/12/${anoCalAtual} (atualizado): R$ ${fmtBRL(d.valor_atual)}`);
       if (d.valor_pago != null) linhasDestaque.push(`Valor Pago em ${anoCalAtual} (atualizado): R$ ${fmtBRL(d.valor_pago)}`);
-      renderCard(RGB.azul, RGB.bgAzul, header, d.origem || null, pares, linhasDestaque);
+      renderCard(RGB.azul, RGB.bgAzul, header, d.origem || null, pares, linhasDestaque, "ALTERADO", RGB.azul);
     }
     y += 2;
   }
@@ -3558,7 +3589,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
         ["CNPJ", fmtCNPJ(tpl.cnpj_fonte), "Categoria", tpl.descricao || "—"],
         ["Valor (template)", `R$ ${fmtBRL(tpl.valor ?? 0)}`, "Valor (atualizado)", `R$ ${fmtBRL(r.valor ?? 0)}`],
       ];
-      renderCard(RGB.azul, RGB.bgAzul, header, r.origem || null, pares, null);
+      renderCard(RGB.azul, RGB.bgAzul, header, r.origem || null, pares, null, "ALTERADO", RGB.azul);
     }
     y += 2;
   }
@@ -3574,7 +3605,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
         ["Beneficiário", tpl.nome ?? "—", "Valor Pago (template)", `R$ ${fmtBRL(tpl.valor_pago ?? 0)}`],
       ];
       const destaque = `Valor Pago em ${anoCalAtual} (atualizado): R$ ${fmtBRL(p.valor_pago)}`;
-      renderCard(RGB.azul, RGB.bgAzul, header, p.origem || null, pares, destaque);
+      renderCard(RGB.azul, RGB.bgAzul, header, p.origem || null, pares, destaque, "ALTERADO", RGB.azul);
     }
     y += 2;
   }
@@ -3590,7 +3621,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
         ["Fonte", tpl.nome_fonte ?? "—", "Valor (template)", `R$ ${fmtBRL(tpl.valor ?? 0)}`],
       ];
       const destaque = `Valor (atualizado): R$ ${fmtBRL(e.valor)}`;
-      renderCard(RGB.azul, RGB.bgAzul, header, e.origem || null, pares, destaque);
+      renderCard(RGB.azul, RGB.bgAzul, header, e.origem || null, pares, destaque, "ALTERADO", RGB.azul);
     }
     y += 2;
   }
@@ -3605,7 +3636,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
         ["Rendimentos", `R$ ${fmtBRL(f.rendimentos_tributaveis ?? 0)}`, "13º salário", `R$ ${fmtBRL(f.decimo_terceiro ?? 0)}`],
         ["INSS retido", `R$ ${fmtBRL(f.inss ?? 0)}`, "IR retido", `R$ ${fmtBRL(f.ir_retido ?? 0)}`],
       ];
-      renderCard(RGB.verde, RGB.bgVerde, header, f.origem || null, pares, null);
+      renderCard(RGB.verde, RGB.bgVerde, header, f.origem || null, pares, null, "NOVO", RGB.verde);
     }
     y += 2;
   }
@@ -3639,7 +3670,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
           pares.push(["CNPJ", b.cnpj ? fmtCNPJ(b.cnpj) : "—", "Banco", b.banco ?? "—"]);
           pares.push(["Agencia", b.agencia ?? "—", "Conta", b.conta ?? "—"]);
         }
-        renderCard(RGB.verde, RGB.bgVerde, header, b.origem || null, pares, null);
+        renderCard(RGB.verde, RGB.bgVerde, header, b.origem || null, pares, null, "NOVO", RGB.verde);
       }
     }
     y += 2;
@@ -3667,7 +3698,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
           ["Codigo", d.codigo ?? "—", "Discriminacao", d.discriminacao ?? "—"],
           [`Saldo 31/12/${anoCalAtual}`, `R$ ${fmtBRL(d.valor_atual ?? 0)}`, "Valor Anterior", `R$ ${fmtBRL(d.valor_anterior ?? 0)}`],
         ];
-        renderCard(RGB.verde, RGB.bgVerde, header, d.origem || null, pares, null);
+        renderCard(RGB.verde, RGB.bgVerde, header, d.origem || null, pares, null, "NOVO", RGB.verde);
       }
     }
     y += 2;
@@ -3697,7 +3728,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
           ["Código", p.codigo ?? "—", "CNPJ/CPF", cnpjCpf ? (cnpjCpf.length === 14 ? fmtCNPJ(cnpjCpf) : fmtCPF(cnpjCpf)) : "—"],
           ["Beneficiário", p.nome ?? "—", "Valor Pago", `R$ ${fmtBRL(p.valor_pago ?? 0)}`],
         ];
-        renderCard(RGB.verde, RGB.bgVerde, header, p.origem || null, pares, null);
+        renderCard(RGB.verde, RGB.bgVerde, header, p.origem || null, pares, null, "NOVO", RGB.verde);
       }
     }
     y += 2;
@@ -3726,7 +3757,7 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
           ["CNPJ Fonte", e.cnpj_fonte ? fmtCNPJ(e.cnpj_fonte) : "—", "CPF Benef.", e.cpf_beneficiario ? fmtCPF(e.cpf_beneficiario) : "—"],
           ["Fonte", e.nome_fonte ?? "—", "Valor", `R$ ${fmtBRL(e.valor ?? 0)}`],
         ];
-        renderCard(RGB.verde, RGB.bgVerde, header, e.origem || null, pares, null);
+        renderCard(RGB.verde, RGB.bgVerde, header, e.origem || null, pares, null, "NOVO", RGB.verde);
       }
     }
     y += 2;
@@ -3736,41 +3767,41 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
   if (carneLeaoAprov.length > 0) {
     secaoColorida("", "Rendimentos PF · Carnê-Leão", carneLeaoAprov.length, RGB.verde);
     for (const p of carneLeaoAprov) {
-      ensure(22);
+      ensure(24);
       const yInicio = y;
       const vm = p.valores_mensais || {};
       const meses = Object.entries(vm).filter(([_, v]) => Number(v) > 0).map(([m, v]) => `${m.padStart(2, "0")}: R$ ${fmtBRL(v)}`);
-      const linsMeses = doc.splitTextToSize(meses.join("  ·  "), LARG - 10);
-      const altEstim = 4.5 + 4 + 5 + (linsMeses.length * 4) + 4;
+      const linsMeses = doc.splitTextToSize(meses.join("  ·  "), LARG - 12);
+      const altEstim = 5 + 4 + 5.5 + (linsMeses.length * 4) + 6;
       setFill(RGB.bgVerde);
-      doc.rect(MARG_L, yInicio - 2, LARG, altEstim, "F");
+      doc.rect(MARG_L, yInicio - 1, LARG, altEstim, "F");
       setFill(RGB.verde);
-      doc.rect(MARG_L, yInicio - 2, 1.2, altEstim, "F");
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(10);
-      setText(RGB.verde);
-      doc.text("+", MARG_L + 4, y + 1);
+      doc.rect(MARG_L, yInicio - 1, 1.5, altEstim, "F");
+      // Badge CARNÊ-LEÃO no canto direito
+      desenhaBadge("CARNÊ-LEÃO", MARG_L + LARG - 4, yInicio + 0.8, RGB.verde);
+      doc.setFont("times", "bold");
+      doc.setFontSize(11);
       setText(RGB.tinta);
-      doc.text(p.nome || "(sem nome)", MARG_L + 9, y + 1);
-      y += 4.5;
+      doc.text(p.nome || "(sem nome)", MARG_L + 6, y + 2.5);
+      y += 5;
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8);
       setText(RGB.sutil);
-      doc.text(`CPF ${fmtCPF(p.cpf)}${p.natureza ? "  ·  " + p.natureza : ""}`, MARG_L + 9, y + 1);
+      doc.text(`CPF ${fmtCPF(p.cpf)}${p.natureza ? "  ·  " + p.natureza : ""}`, MARG_L + 6, y + 2);
       y += 4;
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(9);
+      doc.setFontSize(9.5);
       setText(RGB.tinta);
-      doc.text(`Total no ano: R$ ${fmtBRL(p.valor_total_ano)}`, MARG_L + 9, y + 1);
-      y += 5;
+      doc.text(`Total no ano: R$ ${fmtBRL(p.valor_total_ano)}`, MARG_L + 6, y + 2.5);
+      y += 5.5;
       if (linsMeses.length) {
         doc.setFont("helvetica", "normal");
         doc.setFontSize(8);
         setText(RGB.sutil);
-        doc.text(linsMeses, MARG_L + 9, y + 1);
+        doc.text(linsMeses, MARG_L + 6, y + 2);
         y += linsMeses.length * 4;
       }
-      y += 4;
+      y += 6;
     }
     y += 2;
   }
@@ -3787,43 +3818,77 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo) {
       ...isentosRemoverAprov.map(i => ({ tipo: "Rendimento isento", idx: i.idx, motivo: i.motivo, item: templateInfo.rendIsentos[i.idx - 1] })),
       ...exclRemoverAprov.map(e => ({ tipo: "Rendimento exclusivo", idx: e.idx, motivo: e.motivo, item: templateInfo.rendExclusivos[e.idx - 1] })),
     ];
-    for (const r of remover) {
-      ensure(14);
-      const yInicio = y;
-      const altEstim = 10;
-      setFill(RGB.bgLaranja);
-      doc.rect(MARG_L, yInicio - 2, LARG, altEstim, "F");
-      setFill(RGB.laranja);
-      doc.rect(MARG_L, yInicio - 2, 1.2, altEstim, "F");
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(10);
-      setText(RGB.laranja);
-      doc.text("−", MARG_L + 4, y + 1);
-      setText(RGB.tinta);
-      const nome = r.item?.discriminacao || r.item?.nome || r.item?.nome_fonte || `${r.tipo} ${r.idx}`;
-      doc.text(`${r.tipo} ${r.idx} · ${nome.slice(0, 80)}`, MARG_L + 9, y + 1);
-      y += 4.5;
-      if (r.motivo) {
-        doc.setFont("helvetica", "italic");
-        doc.setFontSize(8);
-        setText(RGB.sutil);
-        doc.text(`Motivo: ${r.motivo}`, MARG_L + 9, y + 1);
-        y += 4;
+    // Construtor dos pares por tipo de item — replica o detalhe que o card do HTML mostra.
+    // Cada par é [label1, valor1, label2, valor2] e renderiza em 2 colunas.
+    const paresParaRemocao = (tipo, item) => {
+      if (!item) return [];
+      const moeda = (v) => `R$ ${fmtBRL(v ?? 0)}`;
+      const ouTraço = (v) => (v == null || v === "" ? "—" : String(v));
+      if (tipo === "Bem") {
+        return [
+          ["Grupo Receita", ouTraço(item.grupo_receita), "Nome Grupo Receita", ouTraço(item.nome_grupo_receita)],
+          ["Cod Tributário", ouTraço(item.cod_tributario || item.grupo), "Grupo", ouTraço(item.grupo)],
+          ["Código", ouTraço(item.codigo), "Discriminação", ouTraço(item.discriminacao)],
+          [`Valor 31/12/${anoCalAnterior}`, moeda(item.valor_anterior), `Valor 31/12/${anoCalAtual}`, moeda(item.valor_atual)],
+        ];
       }
-      y += 4;
+      if (tipo === "Dívida") {
+        return [
+          ["Código", ouTraço(item.codigo), "Discriminação", ouTraço(item.discriminacao)],
+          [`Saldo 31/12/${anoCalAnterior}`, moeda(item.valor_anterior), `Saldo 31/12/${anoCalAtual}`, moeda(item.valor_atual)],
+          ["Valor pago no ano", moeda(item.valor_pago), "", ""],
+        ];
+      }
+      if (tipo === "Pagamento") {
+        const cnpjCpf = String(item.cnpj_cpf || item.cnpj || item.cpf || "").replace(/\D/g, "");
+        const cpfCnpjFmt = cnpjCpf ? (cnpjCpf.length === 14 ? fmtCNPJ(cnpjCpf) : fmtCPF(cnpjCpf)) : "—";
+        return [
+          ["Código", ouTraço(item.codigo), "CNPJ/CPF", cpfCnpjFmt],
+          ["Beneficiário", ouTraço(item.nome), "Valor pago", moeda(item.valor_pago)],
+        ];
+      }
+      if (tipo === "Rendimento isento") {
+        return [
+          ["CNPJ Fonte", item.cnpj_fonte ? fmtCNPJ(item.cnpj_fonte) : "—", "Nome Fonte", ouTraço(item.nome_fonte)],
+          ["Descrição", ouTraço(item.descricao), "Valor", moeda(item.valor)],
+        ];
+      }
+      if (tipo === "Rendimento exclusivo") {
+        return [
+          ["Código", ouTraço(item.codigo), "Tipo Beneficiário", ouTraço(item.tipo_beneficiario || "T")],
+          ["CNPJ Fonte", item.cnpj_fonte ? fmtCNPJ(item.cnpj_fonte) : "—", "Nome Fonte", ouTraço(item.nome_fonte)],
+          ["Valor", moeda(item.valor), "", ""],
+        ];
+      }
+      if (tipo === "Dependente") {
+        return [
+          ["Nome", ouTraço(item.nome), "CPF", item.cpf ? fmtCPF(item.cpf) : "—"],
+          ["Data de nascimento", item.data_nascimento ? fmtData(item.data_nascimento) : "—", "Parentesco (cód)", ouTraço(item.parentesco_cod)],
+        ];
+      }
+      return [];
+    };
+
+    for (const r of remover) {
+      const item = r.item || {};
+      const nomeBruto = item.discriminacao || item.nome || item.nome_fonte || `${r.tipo} ${r.idx}`;
+      const header = `${r.tipo} ${r.idx} · ${nomeBruto}`;
+      const origem = r.motivo ? `Motivo: ${r.motivo}` : null;
+      const pares = paresParaRemocao(r.tipo, item);
+      renderCard(RGB.laranja, RGB.bgLaranja, header, origem, pares, null, "REMOVER", RGB.laranja);
     }
     y += 2;
   }
 
   // === RODAPÉ ===
   ensure(22);
-  y += 6;
+  y += 8;
   setDraw(RGB.linha);
   doc.setLineWidth(0.3);
   doc.line(MARG_L, y, 210 - MARG_R, y);
-  y += 8;
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
+  y += 10;
+  doc.setFont("times", "bold");
+  doc.setFontSize(13);
   setText(RGB.tinta);
   doc.text(`Total de alterações aprovadas: ${totalAlt}`, MARG_L, y);
 
