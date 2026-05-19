@@ -4530,13 +4530,14 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
         <ItemCard key="c" item={contribItem} getHeader={(x) => x.resumo} status={statusContrib} />
       ]} />
 
-      <Bloco titulo="Fontes pagadoras" itens={[...fontesCards, ...fontesNovasCards]} vazio="Nenhuma fonte pagadora no template" />
+      {/* Ordem espelhada do PGD da Receita Federal: dependentes → rendimentos PJ → isentos → exclusivos → pagamentos → bens → dívidas */}
       <Bloco titulo="Dependentes" itens={[...dependentesCards, ...dependentesNovosCards]} vazio="Sem dependentes" />
+      <Bloco titulo="Rendimentos tributáveis recebidos de PJ" itens={[...fontesCards, ...fontesNovasCards]} vazio="Nenhuma fonte pagadora no template" />
+      <Bloco titulo="Rendimentos isentos e não tributáveis" itens={isentosCards} vazio="Sem rendimentos isentos no template" />
+      <Bloco titulo="Rendimentos sujeitos à tributação exclusiva/definitiva" itens={[...rendExclusivosCards, ...rendExclusivosNovosCards]} vazio="Sem rendimentos exclusivos no template" />
+      <Bloco titulo="Pagamentos efetuados" itens={[...pagamentosCards, ...pagamentosNovosCards]} vazio="Sem pagamentos no template" />
       <Bloco titulo="Bens e direitos" itens={[...bensCards, ...bensNovosCards]} vazio="Sem bens no template" />
       <Bloco titulo="Dívidas e ônus reais" itens={[...dividasCards, ...dividasNovasCards]} vazio="Sem dívidas no template" />
-      <Bloco titulo="Pagamentos efetuados" itens={[...pagamentosCards, ...pagamentosNovosCards]} vazio="Sem pagamentos no template" />
-      <Bloco titulo="Rendimentos isentos" itens={isentosCards} vazio="Sem rendimentos isentos no template" />
-      <Bloco titulo="Rendimentos sujeitos à tributação exclusiva" itens={[...rendExclusivosCards, ...rendExclusivosNovosCards]} vazio="Sem rendimentos exclusivos no template" />
     </div>
   );
 }
