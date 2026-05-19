@@ -106,6 +106,17 @@ function fmtData8(s) {
   return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`;
 }
 const fmtData = fmtData8;
+
+// Calcula idade COMPLETADA em 31/dez do ano-calendário (regra usada pra dependentes IRPF).
+// Retorna número de anos ou null se a data for inválida.
+function calcularIdade(dataDDMMAAAA, anoCalendario) {
+  const d = String(dataDDMMAAAA || "").replace(/\D/g, "");
+  if (d.length !== 8) return null;
+  const anoNasc = parseInt(d.slice(4), 10);
+  const anoRef = parseInt(anoCalendario, 10);
+  if (!Number.isFinite(anoNasc) || !Number.isFinite(anoRef)) return null;
+  return anoRef - anoNasc;
+}
 function fmtCEP(s) {
   const d = String(s || "").replace(/\D/g, "");
   return d.length === 8 ? `${d.slice(0, 5)}-${d.slice(5)}` : s;
@@ -1422,6 +1433,8 @@ function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
   const linhasOriginais = [...templateInfo.linhas];
   const novasLinhas = [...linhasOriginais];
   const aplicadas = [];
+  const anoCalAtual = templateInfo.anoCalendario || "atual";
+  const anoCalAnterior = anoCalAtual && /^\d{4}$/.test(anoCalAtual) ? String(parseInt(anoCalAtual, 10) - 1) : "anterior";
 
   // Helper: aplica override (se existir) por cima de um item do patch antes de escrever no .DBK.
   // Garante que o valor que vai pra Receita é o EDITADO PELO CONTADOR, não o original da IA.
@@ -1465,6 +1478,20 @@ function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
     novasLinhas[tpl._idx] = modificarReg27(linhasOriginais[tpl._idx], bFinal);
     aplicadas.push(`bem B${b.idx}`);
   }
+
+  // 27 — AUTO-REPETIR 2024 → 2025 pra bens estáticos (carro/imóvel/participação) com
+  // valor_atual zerado no template. Aplicado APENAS quando a IA não tocou no bem
+  // (patch da IA tem prioridade) e o contador não desativou via aprovação.
+  (templateInfo.bens || []).forEach((tpl, i) => {
+    const idx = i + 1;
+    if (!precisaCopiarDe2024(tpl)) return;
+    if ((patch.bens_atualizados || []).some(x => x.idx === idx)) return;
+    if ((patch.bens_a_remover || []).some(x => x.idx === idx)) return;
+    if (aprovacoes[`bem_auto_${idx}`] === false) return;
+    if (!bemAtualizavel(tpl)) return;
+    novasLinhas[tpl._idx] = modificarReg27(linhasOriginais[tpl._idx], { idx, valor_atual: tpl.valor_anterior });
+    aplicadas.push(`bem B${idx} (AUTO: valor ${anoCalAtual} repetido de ${anoCalAnterior})`);
+  });
 
   // 28 — dívidas
   for (const d of patch.dividas_atualizadas || []) {
@@ -3455,10 +3482,20 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo, m
   const isentosRemoverAprov  = combinarRemovidos(patch.rendimentos_isentos_a_remover,    templateInfo.rendIsentos,   "isento_remover", "isento", motivoManual);
   const exclRemoverAprov     = combinarRemovidos(patch.rendimentos_exclusivos_a_remover, templateInfo.rendExclusivos,"excl_remover",   "excl",   motivoManual);
 
+  // Auto-repetições (bens estáticos zerados em 31/12 atual): calculadas aqui pra entrar no total
+  const autoRepetidosCount = (templateInfo.bens || []).filter((tpl, i) => {
+    const idx = i + 1;
+    if (!precisaCopiarDe2024(tpl)) return false;
+    if ((patch.bens_atualizados || []).some(x => x.idx === idx)) return false;
+    if ((patch.bens_a_remover || []).some(x => x.idx === idx)) return false;
+    if (aprovacoes[`bem_auto_${idx}`] === false) return false;
+    return true;
+  }).length;
+
   const totalAlt = (contribAprov ? 1 : 0) + bensAprov.length + dividasAprov.length + fontesAprov.length +
     isentosAprov.length + exclAtualizAprov.length + depAtualizAprov.length + pagAtualizAprov.length +
     fontesNovasAprov.length + bensNovosAprov.length + dividasNovasAprov.length + pagNovosAprov.length + exclNovosAprov.length +
-    carneLeaoAprov.length +
+    carneLeaoAprov.length + autoRepetidosCount +
     bensRemoverAprov.length + dividasRemoverAprov.length + depRemoverAprov.length + pagRemoverAprov.length + isentosRemoverAprov.length + exclRemoverAprov.length;
 
   // === SUMÁRIO ===
@@ -3603,6 +3640,36 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo, m
       if (b.valor_atual != null) linhasDestaque.push(`Valor 31/12/${anoCalAtual} (atualizado): R$ ${fmtBRL(b.valor_atual)}`);
       const destaque = linhasDestaque.join("\n");
       renderCard(RGB.azul, RGB.bgAzul, header, b.origem || null, pares, destaque, "ALTERADO", RGB.azul, foiEditado(chaveOv));
+    }
+    y += 2;
+  }
+
+  // === BENS COM VALOR REPETIDO DE 2024 (auto / âmbar) ===
+  // Bens estáticos (carro, imóvel, participação societária) que vinham com valor_atual zerado
+  // no template e o Estúdio replicou automaticamente o valor de 2024 pra 2025.
+  const autoRepetidos = (templateInfo.bens || [])
+    .map((tpl, i) => ({ tpl, idx: i + 1 }))
+    .filter(({ tpl, idx }) => {
+      if (!precisaCopiarDe2024(tpl)) return false;
+      if ((patch.bens_atualizados || []).some(x => x.idx === idx)) return false;
+      if ((patch.bens_a_remover || []).some(x => x.idx === idx)) return false;
+      if (aprovacoes[`bem_auto_${idx}`] === false) return false;
+      return true;
+    });
+  if (autoRepetidos.length > 0) {
+    secaoColorida("", `${autoRepetidos.length > 1 ? "Bens com valor" : "Bem com valor"} ${anoCalAtual} repetido de ${anoCalAnterior}`, autoRepetidos.length, [200, 155, 42]);
+    for (const { tpl, idx } of autoRepetidos) {
+      const grupoLabel = tpl.grupo_receita
+        ? `Grupo ${tpl.grupo_receita} · ${tpl.nome_grupo_receita} · Cód ${tpl.cod_tributario || tpl.grupo}`
+        : `Cód ${tpl.grupo}/${tpl.codigo}`;
+      const header = `B${idx} · ${grupoLabel} · ${(tpl.discriminacao || "").slice(0, 50)}`;
+      const pares = [
+        ["Grupo Receita", tpl.grupo_receita ?? "—", "Nome Grupo Receita", tpl.nome_grupo_receita ?? "—"],
+        ["Cod Tributário", tpl.cod_tributario || tpl.grupo || "—", "Código", tpl.codigo || "—"],
+        ["Discriminação", tpl.discriminacao || "—", "", ""],
+        [`Valor 31/12/${anoCalAnterior}`, `R$ ${fmtBRL(tpl.valor_anterior ?? 0)}`, `Valor 31/12/${anoCalAtual} (auto)`, `R$ ${fmtBRL(tpl.valor_anterior ?? 0)}`],
+      ];
+      renderCard([200, 155, 42], [251, 245, 230], header, "Valor 2024 repetido em 2025 — bem patrimonial não muda automaticamente", pares, null, "REPETIR 2024", [200, 155, 42], false);
     }
     y += 2;
   }
@@ -4346,7 +4413,11 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
   const chaveAntAtualizado = labelAnoAnt ? `valor_atualizado_31_12_${labelAnoAnt}` : "valor_anterior_atualizado";
 
   const bensCards = (templateInfo.bens || []).map((b, i) => {
-    const { status, patchItem } = calcularStatusBem(i + 1, b, patch);
+    let { status, patchItem } = calcularStatusBem(i + 1, b, patch);
+    // Auto-repetir 2024 → 2025 quando o bem é estático (carro/imóvel/participação)
+    // e o contribuinte não preencheu o valor_atual no PGD. Aplicado APENAS quando o
+    // patch da IA não tocou nesse bem (IA tem prioridade — pode ter motivo melhor).
+    const aplicarAutoRepeticao = precisaCopiarDe2024(b) && !patchItem && status !== "remover";
     const grupoLabel = b.grupo_receita
       ? `Grupo ${b.grupo_receita} · ${b.nome_grupo_receita} · Cód ${b.cod_tributario || b.grupo}`
       : `Cód ${b.grupo}/${b.codigo}`;
@@ -4359,8 +4430,11 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
       codigo: b.codigo,
       discriminacao: b.discriminacao,
       [chaveAnt]: b.valor_anterior,
-      [chaveAtu]: b.valor_atual,
+      [chaveAtu]: aplicarAutoRepeticao ? b.valor_anterior : b.valor_atual,
     };
+    if (aplicarAutoRepeticao) {
+      status = "auto_repetir";
+    }
     if (patchItem && patchItem.valor_anterior != null) {
       item[chaveAntAtualizado] = patchItem.valor_anterior;
     }
@@ -4445,7 +4519,17 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
       data_nascimento: fmtData8(d.data_nascimento),
       parentesco_cod: d.parentesco_cod,
     }, patchItem);
-    return <ItemCard key={`dep${i}`} item={item} idx={i + 1} prefixo="D" getHeader={(x) => x.resumo} status={status} />;
+    // Alerta de idade: filhos/enteados/irmãos têm limites legais
+    // (até 21 sem condição, até 24 cursando ensino superior).
+    // Acima desses limites, deduzir o dependente vira tema de revisão pelo contador.
+    const idade = calcularIdade(d.data_nascimento, anoCalTpl);
+    let alertaIdade = null;
+    if (idade != null && idade > 24) {
+      alertaIdade = { texto: `${idade} anos`, cor: COR_VERMELHO, titulo: `Maior de 24 — verificar se ainda se enquadra como dependente (idade no fim de ${labelAnoAtu})` };
+    } else if (idade != null && idade > 21) {
+      alertaIdade = { texto: `${idade} anos`, cor: COR_AMBAR, titulo: `Entre 22 e 24 — só se aceita como dependente se cursando ensino superior/técnico (tipo 22 ou 25). Idade no fim de ${labelAnoAtu}` };
+    }
+    return <ItemCard key={`dep${i}`} item={item} idx={i + 1} prefixo="D" getHeader={(x) => x.resumo} status={status} alertaIdade={alertaIdade} />;
   });
   const dependentesNovosCards = (patch?.dependentes_novos_aviso || []).map((d, i) => {
     if (typeof d === "string") return <ItemCard key={`depn${i}`} item={{ resumo: d }} idx={(templateInfo.dependentes?.length || 0) + i + 1} prefixo="D" getHeader={(x) => x.resumo} status="novo" />;
@@ -4729,14 +4813,28 @@ const STATUS_CONFIG = {
   remover:  { borda: COR_LARANJA,  bg: "#fceee0",  badge: "REMOVER",  badgeBg: COR_LARANJA,  badgeFg: "#fff" },
   // vermelho: caso não mapeado — saldo já zerado no template; contador decide
   revisar:  { borda: COR_VERMELHO, bg: "#f6e9e5",  badge: "REVISAR",  badgeBg: COR_VERMELHO, badgeFg: "#fff" },
+  // âmbar info: valor 2025 zerado em bem estático (carro/imóvel/participação) — Estúdio repete o valor de 2024
+  auto_repetir: { borda: COR_AMBAR, bg: "#fbf5e6",  badge: "REPETIR 2024", badgeBg: COR_AMBAR, badgeFg: "#fff" },
 };
+
+// Bens cujo valor declarado é HISTÓRICO (não varia naturalmente de ano pra ano):
+// imóveis (grupo 01), bens móveis = carros/motos/embarcações (02), participações societárias (03).
+// Pra esses, se o template tem valor_atual=0 e valor_anterior>0, é apenas porque o contribuinte
+// não preencheu — o valor real continua o de 2024. Estúdio auto-repete pra evitar erro do contador.
+function bemTipicamenteEstatico(b) {
+  const g = String(b?.grupo || "").padStart(2, "0");
+  return g === "01" || g === "02" || g === "03";
+}
+function precisaCopiarDe2024(b) {
+  return bemTipicamenteEstatico(b) && Number(b?.valor_atual) === 0 && Number(b?.valor_anterior) > 0;
+}
 
 // Card de um item da lista — mostra header + metadados + todos os outros campos
 // Quando recebe `onSalvarEdicao`, o card ganha botão "Editar" que expande inline
 // pra um form com todos os campos editáveis. Ao salvar, chama o callback com os
 // novos valores. Quando `editado=true`, mostra badge âmbar "EDITADO" indicando
 // que o contador sobrescreveu os valores propostos pela IA.
-function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", marcadoRemover, onMarcarRemover, onSalvarEdicao, editado }) {
+function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", marcadoRemover, onMarcarRemover, onSalvarEdicao, editado, alertaIdade }) {
   const skip = new Set(["origem", "_idx", ...ignoreKeys]);
   const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.neutro;
   const corBorda = color || cfg.borda;
@@ -4815,6 +4913,18 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
               borderRadius: 2,
               textTransform: "uppercase",
             }}>Editado</span>
+          )}
+          {alertaIdade && (
+            <span style={{
+              background: alertaIdade.cor,
+              color: "#fff",
+              fontSize: 9,
+              fontWeight: 600,
+              letterSpacing: 0.6,
+              padding: "2px 6px",
+              borderRadius: 2,
+              textTransform: "uppercase",
+            }} title={alertaIdade.titulo}>{alertaIdade.texto}</span>
           )}
         </div>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
