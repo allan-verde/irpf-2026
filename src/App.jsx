@@ -303,6 +303,17 @@ function lerTemplateInfo(conteudo) {
         titulo_eleitor: linha.substring(325, 337).trim(),
         data_nascimento: linha.substring(360, 368),
         telefone: linha.substring(485, 496).trim(),
+        // Flags do PGD: pos 387-390 são 4 chars S/N em sequência fixa.
+        // Mapeamento deduzido por comparação de .DBKs de contribuintes diferentes
+        // (ambos retornaram "SNSN" no pré-preenchido):
+        // 387 = brasileiro nato/nacionalidade (default S)
+        // 388 = houve alteração cadastral (default N)
+        // 389 = reside no Brasil (default S)
+        // 390 = era residente no exterior em 2025 e passou a residir no Brasil (default N)
+        flag_brasileiro_nato:        linha.charAt(387),
+        flag_alteracao_cadastral:    linha.charAt(388),
+        flag_reside_brasil:          linha.charAt(389),
+        flag_era_residente_exterior: linha.charAt(390),
         _idx: idx,
       };
       info.endereco = {
@@ -657,6 +668,23 @@ function modificarReg16(linha, contribuinte, endereco) {
     const tel = String(contribuinte.telefone).replace(/\D/g, "").padStart(11, "0").slice(-11);
     s = escreverTexto(s, 485, 11, tel);
   }
+  // Flags S/N do reg 16 — escreve apenas se chegou no patch.
+  // Suporta tanto valores 'S'/'N' (PGD-style) quanto true/false (booleano).
+  const normFlag = (v) => {
+    if (v === true || v === "S" || v === "s" || v === "Sim" || v === "sim") return "S";
+    if (v === false || v === "N" || v === "n" || v === "Não" || v === "Nao" || v === "nao") return "N";
+    return null;
+  };
+  const escFlag = (str, pos, v) => {
+    const n = normFlag(v);
+    if (n == null) return str;
+    return str.substring(0, pos) + n + str.substring(pos + 1);
+  };
+  if (contribuinte?.flag_brasileiro_nato        != null) s = escFlag(s, 387, contribuinte.flag_brasileiro_nato);
+  if (contribuinte?.flag_alteracao_cadastral    != null) s = escFlag(s, 388, contribuinte.flag_alteracao_cadastral);
+  if (contribuinte?.flag_reside_brasil          != null) s = escFlag(s, 389, contribuinte.flag_reside_brasil);
+  if (contribuinte?.flag_era_residente_exterior != null) s = escFlag(s, 390, contribuinte.flag_era_residente_exterior);
+
   if (endereco?.tipo_logradouro) s = escreverTexto(s, 73, 15, endereco.tipo_logradouro, { upper: true, semAcento: true });
   if (endereco?.logradouro) s = escreverTexto(s, 88, 40, endereco.logradouro, { upper: true, semAcento: true });
   if (endereco?.numero) s = escreverTexto(s, 128, 6, endereco.numero);
@@ -1447,12 +1475,31 @@ function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
   };
 
   // 16 — contribuinte/endereço
-  if (templateInfo.contribuinte && (patch.contribuinte || patch.endereco) && aprovacoes["contrib"] !== false) {
+  // Auto-correção das flags 'houve alteração cadastral' e 'era residente exterior':
+  // o .DBK pré-preenchido do PGD vem com esses campos VAZIOS — o contador é obrigado
+  // a marcar 'Não' em todo cliente. Estúdio automatiza isso: SEMPRE seta 'N' nas duas
+  // flags, a menos que a IA tenha proposto outro valor (raro) OU o contador tenha
+  // desativado via aprovação no UI.
+  const flagsAuto = {};
+  if (patch.contribuinte?.flag_alteracao_cadastral == null
+      && aprovacoes["contrib_flag_alteracao_auto"] !== false) {
+    flagsAuto.flag_alteracao_cadastral = "N";
+  }
+  if (patch.contribuinte?.flag_era_residente_exterior == null
+      && aprovacoes["contrib_flag_exterior_auto"] !== false) {
+    flagsAuto.flag_era_residente_exterior = "N";
+  }
+  const contribFinal = { ...(patch.contribuinte || {}), ...flagsAuto };
+  const temAlgo = patch.contribuinte || patch.endereco || Object.keys(flagsAuto).length > 0;
+  if (templateInfo.contribuinte && temAlgo && aprovacoes["contrib"] !== false) {
     const idx = templateInfo.contribuinte._idx;
-    const novaLinha = modificarReg16(linhasOriginais[idx], patch.contribuinte || {}, patch.endereco || {});
+    const novaLinha = modificarReg16(linhasOriginais[idx], contribFinal, patch.endereco || {});
     if (novaLinha !== linhasOriginais[idx]) {
       novasLinhas[idx] = novaLinha;
-      aplicadas.push("contribuinte/endereço");
+      const detalhe = Object.keys(flagsAuto).length > 0
+        ? `contribuinte/endereço (AUTO: ${Object.keys(flagsAuto).map(k => k.replace("flag_", "")).join(", ")} = N)`
+        : "contribuinte/endereço";
+      aplicadas.push(detalhe);
     }
   }
 
@@ -3431,7 +3478,12 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo, m
   const exclAtualizAprov = (patch.rendimentos_exclusivos_atualizados || []).filter(e => aprovacoes[`excl_${e.idx}`] !== false);
   const depAtualizAprov = (patch.dependentes_atualizados || []).filter(d => aprovacoes[`dep_${d.idx}`] !== false);
   const pagAtualizAprov = (patch.pagamentos_atualizados || []).filter(p => aprovacoes[`pag_${p.idx}`] !== false);
-  const contribAprov = (patch.contribuinte || patch.endereco) && aprovacoes["contrib"] !== false;
+  // Auto-correção das 2 flags vazias do PGD ("houve alteração cadastral" e "era residente exterior").
+  // Sempre escreve 'N' no .DBK, a menos que o contador tenha desativado via UI.
+  const autoFlagAlteracao = aprovacoes["contrib_flag_alteracao_auto"] !== false && (patch.contribuinte?.flag_alteracao_cadastral == null);
+  const autoFlagExterior  = aprovacoes["contrib_flag_exterior_auto"] !== false && (patch.contribuinte?.flag_era_residente_exterior == null);
+  const temAutoFlags = autoFlagAlteracao || autoFlagExterior;
+  const contribAprov = (patch.contribuinte || patch.endereco || temAutoFlags) && aprovacoes["contrib"] !== false;
 
   // Mantém o índice original do patch (idx) junto com o item — usado pra associar overrides editados pelo contador.
   const fontesNovasAprov = (patch.fontes_novas || []).map((item, idx) => ({item, idx})).filter(({idx}) => aprovacoes[`fonte_nova_${idx}`] !== false);
@@ -3569,6 +3621,15 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo, m
         ensure(7);
         linhaDiff(labelLegivel(k), e[k] || "—", v, false);
       }
+    }
+    // Flags auto-corrigidas: campos vazios do PGD que o Estúdio força como 'Não'
+    if (autoFlagAlteracao) {
+      ensure(7);
+      linhaDiff("Houve alteração cadastral", "(vazio)", "Não (auto)", false);
+    }
+    if (autoFlagExterior) {
+      ensure(7);
+      linhaDiff("Era residente exterior", "(vazio)", "Não (auto)", false);
     }
     // desenhar background do card
     const altura = y - yInicio + 1;
@@ -4383,6 +4444,10 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
   // Contribuinte + Endereço
   const c = templateInfo.contribuinte || {};
   const e = templateInfo.endereco || {};
+  // Essas 2 flags do PGD vêm SEMPRE vazias no pré-preenchido (sem marcação).
+  // O Estúdio garante que vão como 'Não' no .DBK final — toda vez, para todo contribuinte.
+  // Por isso o card mostra "Não (auto)" e destaca visualmente, sempre.
+  const traduzirFlag = (v) => (v === "S" ? "Sim" : v === "N" ? "Não" : (v || "—"));
   const contribItem = {
     resumo: `${c.nome || ""} · CPF ${fmtCPF(c.cpf)}`,
     nome: c.nome,
@@ -4398,8 +4463,24 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     municipio: e.municipio,
     uf: e.uf,
     cep: fmtCEP(e.cep),
+    houve_alteracao_cadastral: "Não (auto)",
+    era_residente_exterior: "Não (auto)",
   };
-  const statusContrib = patch?.contribuinte || patch?.endereco ? "alterado" : "neutro";
+  // Card sempre fica como "alterado" — essas 2 flags são sempre escritas no .DBK,
+  // mesmo sem patch da IA. Por isso é sempre uma alteração proposta.
+  const statusContrib = "alterado";
+  // Campos destacados: as 2 flags auto + qualquer campo tocado pelo patch da IA.
+  const camposContribDestacados = new Set(["houve_alteracao_cadastral", "era_residente_exterior"]);
+  if (patch?.contribuinte) {
+    for (const k of Object.keys(patch.contribuinte)) {
+      if (k === "flag_alteracao_cadastral") camposContribDestacados.add("houve_alteracao_cadastral");
+      else if (k === "flag_era_residente_exterior") camposContribDestacados.add("era_residente_exterior");
+      else camposContribDestacados.add(k);
+    }
+  }
+  if (patch?.endereco) {
+    for (const k of Object.keys(patch.endereco)) camposContribDestacados.add(k);
+  }
 
   // Bens — exibição mostra valores LITERAIS do template (saldos 31/12 dos 2 anos).
   // Se houver patch, adiciona linha extra "Valor 31/12/{ano-cal do template} (atualizado)"
@@ -4611,7 +4692,7 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
       </div>
 
       <Bloco titulo="Contribuinte / Endereço" itens={[
-        <ItemCard key="c" item={contribItem} getHeader={(x) => x.resumo} status={statusContrib} />
+        <ItemCard key="c" item={contribItem} getHeader={(x) => x.resumo} status={statusContrib} camposDestacados={camposContribDestacados} />
       ]} />
 
       {/* Ordem espelhada do PGD da Receita Federal: dependentes → rendimentos PJ → isentos → exclusivos → pagamentos → bens → dívidas */}
@@ -4770,17 +4851,22 @@ function EditableField({ campo, valor, onChange, autoFocus }) {
   );
 }
 
-function KV({ campo, valor, monetario, copiavel = true }) {
+function KV({ campo, valor, monetario, copiavel = true, destacado = false }) {
   if (valor == null || valor === "" || valor === 0 && monetario === false) return null;
   const isMon = monetario !== undefined ? monetario : ehCampoMonetario(campo);
   let display, valorBruto;
   if (isMon) { display = `R$ ${fmtBRL(valor)}`; valorBruto = fmtBRL(valor); }
   else if (typeof valor === "object") { display = JSON.stringify(valor); valorBruto = display; }
   else { display = String(valor); valorBruto = display; }
+  // Destacado: o KV ganha borda esquerda âmbar + fundo claro pra sinalizar que esse campo mudou.
+  const baseStyle = { display: "flex", gap: 8, fontSize: 12, lineHeight: 1.5, alignItems: "center" };
+  const destaqueStyle = destacado
+    ? { borderLeft: `2px solid ${COR_AMBAR}`, background: "#fbf5e6", padding: "2px 6px", marginLeft: -8, borderRadius: 2 }
+    : {};
   return (
-    <div style={{ display: "flex", gap: 8, fontSize: 12, lineHeight: 1.5, alignItems: "center" }}>
+    <div style={{ ...baseStyle, ...destaqueStyle }}>
       <span style={{ color: "#6b6256", minWidth: 130, flexShrink: 0 }}>{labelLegivel(campo)}:</span>
-      <span style={{ fontFamily: isMon ? "'IBM Plex Mono', monospace" : "inherit", color: "#1a1612" }}>{display}</span>
+      <span style={{ fontFamily: isMon ? "'IBM Plex Mono', monospace" : "inherit", color: "#1a1612", fontWeight: destacado ? 600 : 400 }}>{display}</span>
       {copiavel && <BotaoCopiar texto={valorBruto} label={`Copiar ${labelLegivel(campo)}`} />}
     </div>
   );
@@ -4834,7 +4920,7 @@ function precisaCopiarDe2024(b) {
 // pra um form com todos os campos editáveis. Ao salvar, chama o callback com os
 // novos valores. Quando `editado=true`, mostra badge âmbar "EDITADO" indicando
 // que o contador sobrescreveu os valores propostos pela IA.
-function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", marcadoRemover, onMarcarRemover, onSalvarEdicao, editado, alertaIdade }) {
+function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", marcadoRemover, onMarcarRemover, onSalvarEdicao, editado, alertaIdade, camposDestacados }) {
   const skip = new Set(["origem", "_idx", ...ignoreKeys]);
   const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.neutro;
   const corBorda = color || cfg.borda;
@@ -5016,7 +5102,7 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
         // MODO LEITURA — exibe os KVs como antes
         camposExtra.length > 0 && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "3px 16px", marginTop: 6 }}>
-            {camposExtra.map(([k, v]) => <KV key={k} campo={k} valor={v} />)}
+            {camposExtra.map(([k, v]) => <KV key={k} campo={k} valor={v} destacado={camposDestacados ? (camposDestacados instanceof Set ? camposDestacados.has(k) : camposDestacados.includes(k)) : false} />)}
           </div>
         )
       )}
