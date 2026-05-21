@@ -19,17 +19,14 @@ const FONT_LINK = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9
 const LARG_MIN = { "16": 500, "21": 170, "22": 167, "25": 100, "27": 560, "28": 560, "49": 71, "84": 144, "86": 130, "88": 131 };
 
 // Posições das flags S/N do reg 16 (Identificação do Contribuinte).
-// Mapeamento deduzido por diff entre .DBKs de contribuintes diferentes:
-// - 387 e 389 são sempre 'S' (defaults: brasileiro nato e reside no Brasil)
-// - 388, 390, 391 ficam VAZIOS no pré-preenchido até o contribuinte responder no PGD
-// CONFIRMADO experimentalmente quando o user testa o .DBK no PGD após auto-correção.
-// Se alguma posição estiver errada, basta ajustar aqui — todo o resto do código usa essas constantes.
+// CONFIRMADAS experimentalmente via diff de .DBK original vs .DBK salvo no PGD
+// (cliente Rosa Maria Leitão CPF 236.724.393-04, em 2026-05-19).
 const REG16_POS = {
   brasileiro_nato:        387,  // sempre 'S' no pré-preenchido (não mexer)
-  alteracao_cadastral:    388,  // vazio→N : confirmado via teste no PGD
-  reside_brasil:          389,  // sempre 'S' (não mexer)
-  era_residente_exterior: 390,  // vazio→N : hipótese, precisa confirmação
-  possui_conjuge:         391,  // vazio→N : chute, precisa confirmação
+  alteracao_cadastral:    388,  // vazio→N : CONFIRMADO
+  reside_brasil:          389,  // sempre 'S' no pré-preenchido (não mexer)
+  era_residente_exterior: 390,  // vazio→N : CONFIRMADO
+  possui_conjuge:         496,  // vazio→N : CONFIRMADO
 };
 
 // Grupos da Tabela de Bens e Direitos da Receita Federal
