@@ -18,6 +18,20 @@ const FONT_LINK = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9
 //   88: largura padrão = 131 → mín 131
 const LARG_MIN = { "16": 500, "21": 170, "22": 167, "25": 100, "27": 560, "28": 560, "49": 71, "84": 144, "86": 130, "88": 131 };
 
+// Posições das flags S/N do reg 16 (Identificação do Contribuinte).
+// Mapeamento deduzido por diff entre .DBKs de contribuintes diferentes:
+// - 387 e 389 são sempre 'S' (defaults: brasileiro nato e reside no Brasil)
+// - 388, 390, 391 ficam VAZIOS no pré-preenchido até o contribuinte responder no PGD
+// CONFIRMADO experimentalmente quando o user testa o .DBK no PGD após auto-correção.
+// Se alguma posição estiver errada, basta ajustar aqui — todo o resto do código usa essas constantes.
+const REG16_POS = {
+  brasileiro_nato:        387,  // sempre 'S' no pré-preenchido (não mexer)
+  alteracao_cadastral:    388,  // vazio→N : confirmado via teste no PGD
+  reside_brasil:          389,  // sempre 'S' (não mexer)
+  era_residente_exterior: 390,  // vazio→N : hipótese, precisa confirmação
+  possui_conjuge:         391,  // vazio→N : chute, precisa confirmação
+};
+
 // Grupos da Tabela de Bens e Direitos da Receita Federal
 // (esquema "amplo" — agrupa esquema antigo e novo numa única referência humana)
 const GRUPOS_RECEITA = {
@@ -303,17 +317,15 @@ function lerTemplateInfo(conteudo) {
         titulo_eleitor: linha.substring(325, 337).trim(),
         data_nascimento: linha.substring(360, 368),
         telefone: linha.substring(485, 496).trim(),
-        // Flags do PGD: pos 387-390 são 4 chars S/N em sequência fixa.
-        // Mapeamento deduzido por comparação de .DBKs de contribuintes diferentes
-        // (ambos retornaram "SNSN" no pré-preenchido):
-        // 387 = brasileiro nato/nacionalidade (default S)
-        // 388 = houve alteração cadastral (default N)
-        // 389 = reside no Brasil (default S)
-        // 390 = era residente no exterior em 2025 e passou a residir no Brasil (default N)
-        flag_brasileiro_nato:        linha.charAt(387),
-        flag_alteracao_cadastral:    linha.charAt(388),
-        flag_reside_brasil:          linha.charAt(389),
-        flag_era_residente_exterior: linha.charAt(390),
+        // Flags S/N do PGD: ver constante REG16_POS no topo do arquivo.
+        // 387 e 389 são sempre 'S' default (brasileiro nato + reside Brasil).
+        // 388, 390, 391 vêm VAZIAS no pré-preenchido — o contador é obrigado a marcar
+        // 'Não' no PGD pra cada cliente. O Estúdio automatiza isso via auto-correção.
+        flag_brasileiro_nato:        linha.charAt(REG16_POS.brasileiro_nato),
+        flag_alteracao_cadastral:    linha.charAt(REG16_POS.alteracao_cadastral),
+        flag_reside_brasil:          linha.charAt(REG16_POS.reside_brasil),
+        flag_era_residente_exterior: linha.charAt(REG16_POS.era_residente_exterior),
+        flag_possui_conjuge:         linha.charAt(REG16_POS.possui_conjuge),
         _idx: idx,
       };
       info.endereco = {
@@ -680,10 +692,11 @@ function modificarReg16(linha, contribuinte, endereco) {
     if (n == null) return str;
     return str.substring(0, pos) + n + str.substring(pos + 1);
   };
-  if (contribuinte?.flag_brasileiro_nato        != null) s = escFlag(s, 387, contribuinte.flag_brasileiro_nato);
-  if (contribuinte?.flag_alteracao_cadastral    != null) s = escFlag(s, 388, contribuinte.flag_alteracao_cadastral);
-  if (contribuinte?.flag_reside_brasil          != null) s = escFlag(s, 389, contribuinte.flag_reside_brasil);
-  if (contribuinte?.flag_era_residente_exterior != null) s = escFlag(s, 390, contribuinte.flag_era_residente_exterior);
+  if (contribuinte?.flag_brasileiro_nato        != null) s = escFlag(s, REG16_POS.brasileiro_nato,        contribuinte.flag_brasileiro_nato);
+  if (contribuinte?.flag_alteracao_cadastral    != null) s = escFlag(s, REG16_POS.alteracao_cadastral,    contribuinte.flag_alteracao_cadastral);
+  if (contribuinte?.flag_reside_brasil          != null) s = escFlag(s, REG16_POS.reside_brasil,          contribuinte.flag_reside_brasil);
+  if (contribuinte?.flag_era_residente_exterior != null) s = escFlag(s, REG16_POS.era_residente_exterior, contribuinte.flag_era_residente_exterior);
+  if (contribuinte?.flag_possui_conjuge         != null) s = escFlag(s, REG16_POS.possui_conjuge,         contribuinte.flag_possui_conjuge);
 
   if (endereco?.tipo_logradouro) s = escreverTexto(s, 73, 15, endereco.tipo_logradouro, { upper: true, semAcento: true });
   if (endereco?.logradouro) s = escreverTexto(s, 88, 40, endereco.logradouro, { upper: true, semAcento: true });
@@ -1488,6 +1501,10 @@ function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
   if (patch.contribuinte?.flag_era_residente_exterior == null
       && aprovacoes["contrib_flag_exterior_auto"] !== false) {
     flagsAuto.flag_era_residente_exterior = "N";
+  }
+  if (patch.contribuinte?.flag_possui_conjuge == null
+      && aprovacoes["contrib_flag_conjuge_auto"] !== false) {
+    flagsAuto.flag_possui_conjuge = "N";
   }
   const contribFinal = { ...(patch.contribuinte || {}), ...flagsAuto };
   const temAlgo = patch.contribuinte || patch.endereco || Object.keys(flagsAuto).length > 0;
@@ -3478,11 +3495,12 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo, m
   const exclAtualizAprov = (patch.rendimentos_exclusivos_atualizados || []).filter(e => aprovacoes[`excl_${e.idx}`] !== false);
   const depAtualizAprov = (patch.dependentes_atualizados || []).filter(d => aprovacoes[`dep_${d.idx}`] !== false);
   const pagAtualizAprov = (patch.pagamentos_atualizados || []).filter(p => aprovacoes[`pag_${p.idx}`] !== false);
-  // Auto-correção das 2 flags vazias do PGD ("houve alteração cadastral" e "era residente exterior").
+  // Auto-correção das 3 flags vazias do PGD ("houve alteração cadastral", "possui cônjuge", "era residente exterior").
   // Sempre escreve 'N' no .DBK, a menos que o contador tenha desativado via UI.
   const autoFlagAlteracao = aprovacoes["contrib_flag_alteracao_auto"] !== false && (patch.contribuinte?.flag_alteracao_cadastral == null);
-  const autoFlagExterior  = aprovacoes["contrib_flag_exterior_auto"] !== false && (patch.contribuinte?.flag_era_residente_exterior == null);
-  const temAutoFlags = autoFlagAlteracao || autoFlagExterior;
+  const autoFlagExterior  = aprovacoes["contrib_flag_exterior_auto"]  !== false && (patch.contribuinte?.flag_era_residente_exterior == null);
+  const autoFlagConjuge   = aprovacoes["contrib_flag_conjuge_auto"]   !== false && (patch.contribuinte?.flag_possui_conjuge == null);
+  const temAutoFlags = autoFlagAlteracao || autoFlagExterior || autoFlagConjuge;
   const contribAprov = (patch.contribuinte || patch.endereco || temAutoFlags) && aprovacoes["contrib"] !== false;
 
   // Mantém o índice original do patch (idx) junto com o item — usado pra associar overrides editados pelo contador.
@@ -3626,6 +3644,10 @@ async function gerarPdfAlteracoes(templateInfo, patch, aprovacoes, reciboInfo, m
     if (autoFlagAlteracao) {
       ensure(7);
       linhaDiff("Houve alteração cadastral", "(vazio)", "Não (auto)", false);
+    }
+    if (autoFlagConjuge) {
+      ensure(7);
+      linhaDiff("Possui cônjuge", "(vazio)", "Não (auto)", false);
     }
     if (autoFlagExterior) {
       ensure(7);
@@ -4464,17 +4486,19 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     uf: e.uf,
     cep: fmtCEP(e.cep),
     houve_alteracao_cadastral: "Não (auto)",
-    era_residente_exterior: "Não (auto)",
+    possui_conjuge:            "Não (auto)",
+    era_residente_exterior:    "Não (auto)",
   };
-  // Card sempre fica como "alterado" — essas 2 flags são sempre escritas no .DBK,
+  // Card sempre fica como "alterado" — essas 3 flags são sempre escritas no .DBK,
   // mesmo sem patch da IA. Por isso é sempre uma alteração proposta.
   const statusContrib = "alterado";
-  // Campos destacados: as 2 flags auto + qualquer campo tocado pelo patch da IA.
-  const camposContribDestacados = new Set(["houve_alteracao_cadastral", "era_residente_exterior"]);
+  // Campos destacados: as 3 flags auto + qualquer campo tocado pelo patch da IA.
+  const camposContribDestacados = new Set(["houve_alteracao_cadastral", "possui_conjuge", "era_residente_exterior"]);
   if (patch?.contribuinte) {
     for (const k of Object.keys(patch.contribuinte)) {
       if (k === "flag_alteracao_cadastral") camposContribDestacados.add("houve_alteracao_cadastral");
       else if (k === "flag_era_residente_exterior") camposContribDestacados.add("era_residente_exterior");
+      else if (k === "flag_possui_conjuge") camposContribDestacados.add("possui_conjuge");
       else camposContribDestacados.add(k);
     }
   }
