@@ -4829,6 +4829,10 @@ function mesclarItem(itemTemplate, patchItem) {
 function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes = () => {}, manualOverrides = {}, setManualOverrides = () => {}, manualNovos = { bem: [], divida: [], fonte: [], pag: [], isento: [], excl: [], dep: [] }, setManualNovos = () => {} }) {
   if (!templateInfo) return null;
 
+  // Modo de visualização por bloco — "card" (default) ou "tabela".
+  // Aplicado a seções com muitos itens onde tabela ajuda a comparar (pagamentos).
+  const [viewModePag, setViewModePag] = useState("card");
+
   // ============================================================
   // Helpers de itens manuais (criar/duplicar/remover/atualizar)
   // ============================================================
@@ -5048,7 +5052,34 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     };
   };
 
-  const Bloco = ({ titulo, itens, vazio, tipoNovo, rotuloNovo }) => {
+  const Bloco = ({ titulo, itens, vazio, tipoNovo, rotuloNovo, viewMode, setViewMode, tabela }) => {
+    const podeAlternar = viewMode && setViewMode && tabela;
+    const toggleViewMode = podeAlternar && (
+      <div style={{ display: "inline-flex", border: `1px solid ${COR_BORDA}`, borderRadius: 3, overflow: "hidden", marginLeft: "auto" }}>
+        {["card", "tabela"].map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setViewMode(m)}
+            style={{
+              padding: "4px 12px",
+              fontSize: 10,
+              fontFamily: "inherit",
+              fontWeight: 600,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              border: "none",
+              background: viewMode === m ? COR_TINTA : "transparent",
+              color: viewMode === m ? COR_PAPEL : COR_SUTIL,
+              cursor: viewMode === m ? "default" : "pointer",
+              transition: "background 100ms ease, color 100ms ease",
+            }}
+          >
+            {m === "card" ? "Cards" : "Tabela"}
+          </button>
+        ))}
+      </div>
+    );
     const cabecalho = (
       <h4 style={{
         fontFamily: "'Fraunces', serif",
@@ -5069,6 +5100,7 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
             · {itens.length}
           </span>
         )}
+        {toggleViewMode}
       </h4>
     );
     // Botão "+ Adicionar" — aparece no rodapé se tipoNovo for passado (i.e., tipo suporta criação manual)
@@ -5107,7 +5139,7 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     return (
       <div style={{ marginBottom: 28 }}>
         {cabecalho}
-        {itens}
+        {podeAlternar && viewMode === "tabela" ? tabela : itens}
         {botaoAdicionar}
       </div>
     );
@@ -5382,6 +5414,62 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     return <ItemCard key={`pn${i}`} idx={(templateInfo.pagamentos?.length || 0) + i + 1} prefixo="P" getHeader={(x) => x.resumo || x.nome || `Cód ${x.codigo}`} status="novo" {...cardPropsNovo("pag", i, p)} />;
   });
 
+  // ============================================================
+  // Dados RAW da tabela de pagamentos — paralelo aos cards.
+  // Pra cada linha (template, novo IA, manual), montamos um objeto com
+  // dados estruturados + ações (mesmas chaves do aprovacoes/manualNovos).
+  // Usado pelo modo "tabela" do bloco de pagamentos.
+  // ============================================================
+  const pagamentosRows = [
+    // Pagamentos do template (com status alterado/remover/neutro/revisar)
+    ...((templateInfo.pagamentos || []).map((p, i) => {
+      const idx = i + 1;
+      const { status, patchItem } = calcularStatusPagamento(idx, p, patch);
+      const chaveOv = `pag_atualizado_${idx}`;
+      const itemMesclado = mesclarOverride({
+        codigo: p.codigo, cnpj_cpf: p.cnpj_cpf, nome: p.nome, valor_pago: p.valor_pago,
+        ...(patchItem || {}),
+      }, chaveOv);
+      const chaveAprov = status === "alterado" ? `pag_${idx}` : status === "remover" ? `pag_remover_${idx}` : null;
+      const chaveExcluirManual = `pag_revisar_remover_${idx}`;
+      return {
+        _key: `p${i}`,
+        idLabel: `P${idx}`,
+        status,
+        item: itemMesclado,
+        valorOriginal: p.valor_pago,
+        // chaves de aprovação/exclusão
+        chaveAprov,
+        chaveExcluirManual,
+      };
+    })),
+    // Pagamentos novos propostos pela IA
+    ...((patch?.pagamentos_novos_aviso || []).map((p, i) => {
+      const itemRaw = typeof p === "string" ? { resumo: p } : p;
+      const chaveOv = `pag_novo_${i}`;
+      return {
+        _key: `pn${i}`,
+        idLabel: `P${(templateInfo.pagamentos?.length || 0) + i + 1}`,
+        status: "novo",
+        item: mesclarOverride(itemRaw, chaveOv),
+        valorOriginal: null,
+        chaveAprov: chaveOv,
+        chaveExcluirManual: null,
+        ehNovoIA: true,
+      };
+    })),
+    // Pagamentos manuais
+    ...((manualNovos.pag || []).map((p, i) => ({
+      _key: p._uuid,
+      idLabel: `P${(templateInfo.pagamentos?.length || 0) + (patch?.pagamentos_novos_aviso?.length || 0) + i + 1}`,
+      status: "novo",
+      item: p,
+      valorOriginal: null,
+      ehManual: true,
+      uuid: p._uuid,
+    }))),
+  ];
+
   const rendExclusivosCards = (templateInfo.rendExclusivos || []).map((e, i) => {
     const { status, patchItem } = calcularStatusRendExclusivo(i + 1, e, patch);
     const item = {
@@ -5466,6 +5554,18 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
         ]}
         vazio="Sem rendimentos exclusivos no template" />
       <Bloco titulo="Pagamentos efetuados" tipoNovo="pag" rotuloNovo="pagamento"
+        viewMode={viewModePag} setViewMode={setViewModePag}
+        tabela={
+          <TabelaPagamentos
+            rows={pagamentosRows}
+            aprovacoes={aprovacoes}
+            setAprovacoes={setAprovacoes}
+            manualOverrides={manualOverrides}
+            setManualOverrides={setManualOverrides}
+            removerManual={(uuid) => removerNovo("pag", uuid)}
+            duplicarLinha={(row) => duplicarItem("pag", row.item)}
+          />
+        }
         itens={[
           ...pagamentosCards,
           ...pagamentosNovosCards,
@@ -5502,6 +5602,143 @@ function Legenda({ cor, label }) {
 // Renderiza as observações da IA como lista. A string vem da IA com cada nota separada
 // por quebra de linha (\n), ou por hífen/bullet inicial. Dividimos por isso pra dar
 // estrutura visual quando o agente flagar muitos itens (doações, RRA, exterior, etc.).
+// Tabela compacta de pagamentos — modo alternativo aos cards.
+// Mostra cada pagamento como uma linha com colunas: # | Status | Código | Nome | CNPJ/CPF | Valor | Ações
+// Mesmas chaves de aprovacoes/manualOverrides — toggle mantém estado entre modos.
+function TabelaPagamentos({ rows, aprovacoes, setAprovacoes, manualOverrides, setManualOverrides, removerManual, duplicarLinha }) {
+  if (!rows || rows.length === 0) {
+    return <div style={{ fontSize: 12, color: COR_SUTIL, fontStyle: "italic", padding: "10px 14px", background: "#f5f1e8" }}>(vazio)</div>;
+  }
+
+  // Helpers de estado por linha
+  const aprovado = (chave) => chave ? aprovacoes[chave] !== false : true;
+  const marcadoExcluir = (chave) => chave ? aprovacoes[chave] === true : false;
+  const toggleAprov = (chave, v) => setAprovacoes({ ...aprovacoes, [chave]: v });
+  const toggleExcl = (chave, v) => setAprovacoes({ ...aprovacoes, [chave]: v });
+
+  const headerStyle = {
+    fontSize: 10, fontWeight: 600, color: COR_SUTIL, letterSpacing: 0.6,
+    textTransform: "uppercase", padding: "8px 8px", borderBottom: `1px solid ${COR_BORDA}`,
+    textAlign: "left", whiteSpace: "nowrap", background: "#fcfaf4",
+  };
+
+  return (
+    <div style={{ overflowX: "auto", border: `1px solid ${COR_BORDA}`, borderRadius: 2 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead>
+          <tr>
+            <th style={{ ...headerStyle, width: 50 }}>#</th>
+            <th style={{ ...headerStyle, width: 100 }}>Status</th>
+            <th style={{ ...headerStyle, width: 60 }}>Cód</th>
+            <th style={{ ...headerStyle }}>Beneficiário</th>
+            <th style={{ ...headerStyle, width: 140 }}>CNPJ/CPF</th>
+            <th style={{ ...headerStyle, width: 130, textAlign: "right" }}>Valor</th>
+            <th style={{ ...headerStyle, width: 220, textAlign: "right" }}>Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const cfg = STATUS_CONFIG[row.status] || STATUS_CONFIG.neutro;
+            const excluido = !!(row.chaveExcluirManual && marcadoExcluir(row.chaveExcluirManual));
+            const rowBg = excluido ? "#fbeae6" : cfg.bg;
+            const rowBorder = excluido ? COR_VERMELHO : cfg.borda;
+            const cellStyle = {
+              padding: "8px 8px", borderBottom: `1px solid ${COR_BORDA}`,
+              verticalAlign: "middle",
+              textDecoration: excluido ? "line-through" : "none",
+              opacity: excluido ? 0.7 : 1,
+            };
+            const valorMostrado = row.item.valor_pago != null ? row.item.valor_pago : (row.valorOriginal || 0);
+            return (
+              <tr key={row._key} style={{ background: rowBg, borderLeft: `3px solid ${rowBorder}` }}>
+                <td style={{ ...cellStyle, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: COR_SUTIL }}>{row.idLabel}</td>
+                <td style={cellStyle}>
+                  {cfg.badge && (
+                    <span style={{
+                      background: cfg.badgeBg, color: cfg.badgeFg, fontSize: 9, fontWeight: 600,
+                      letterSpacing: 0.6, padding: "2px 6px", borderRadius: 2, textTransform: "uppercase",
+                    }}>{cfg.badge}</span>
+                  )}
+                </td>
+                <td style={{ ...cellStyle, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 }}>{row.item.codigo || "—"}</td>
+                <td style={{ ...cellStyle, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={row.item.nome}>{row.item.nome || "—"}</td>
+                <td style={{ ...cellStyle, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: COR_SUTIL }}>
+                  {(() => {
+                    const v = String(row.item.cnpj_cpf || "").replace(/\D/g, "");
+                    if (v.length === 14) return fmtCNPJ(v);
+                    if (v.length === 11) return fmtCPF(v);
+                    return v || "—";
+                  })()}
+                </td>
+                <td style={{ ...cellStyle, fontFamily: "'IBM Plex Mono', monospace", textAlign: "right", fontWeight: 500 }}>
+                  R$ {fmtBRL(valorMostrado)}
+                  {row.valorOriginal != null && row.item.valor_pago != null && Number(row.valorOriginal) !== Number(row.item.valor_pago) && (
+                    <div style={{ fontSize: 10, color: COR_SUTIL, textDecoration: "line-through", marginTop: 2 }}>
+                      R$ {fmtBRL(row.valorOriginal)}
+                    </div>
+                  )}
+                </td>
+                <td style={{ ...cellStyle, textAlign: "right" }}>
+                  <AcoesLinhaTabela row={row} aprovado={aprovado} marcadoExcluir={marcadoExcluir}
+                    toggleAprov={toggleAprov} toggleExcl={toggleExcl} removerManual={removerManual} duplicarLinha={duplicarLinha} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Botões compactos de ação na linha da tabela. Mantém semântica idêntica aos cards
+// (aceitar/rejeitar, confirmar remoção, excluir, duplicar).
+function AcoesLinhaTabela({ row, aprovado, marcadoExcluir, toggleAprov, toggleExcl, removerManual, duplicarLinha }) {
+  const btnStyle = {
+    fontSize: 10, padding: "3px 7px", border: `1px solid ${COR_BORDA}`,
+    background: "transparent", color: COR_SUTIL, cursor: "pointer", borderRadius: 2,
+    fontFamily: "inherit", fontWeight: 500, whiteSpace: "nowrap",
+  };
+  const btnAtivo = (cor) => ({ ...btnStyle, background: cor, color: "#fff", border: `1px solid ${cor}` });
+
+  return (
+    <div style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      {/* Botão de aceitação/rejeição se houver chave de aprovação */}
+      {row.chaveAprov && (
+        <button type="button" onClick={() => toggleAprov(row.chaveAprov, !aprovado(row.chaveAprov))}
+          title={aprovado(row.chaveAprov) ? "Clique para rejeitar" : "Clique para aceitar"}
+          style={aprovado(row.chaveAprov)
+            ? btnAtivo(row.status === "remover" ? COR_VERMELHO : COR_VERDE)
+            : btnStyle}>
+          {aprovado(row.chaveAprov) ? "✓" : "✗"}
+        </button>
+      )}
+      {/* Botão excluir manual (só pra linhas do template) */}
+      {row.chaveExcluirManual && (
+        <button type="button" onClick={() => toggleExcl(row.chaveExcluirManual, !marcadoExcluir(row.chaveExcluirManual))}
+          title={marcadoExcluir(row.chaveExcluirManual) ? "Cancelar exclusão" : "Excluir do .DBK"}
+          style={marcadoExcluir(row.chaveExcluirManual) ? btnAtivo(COR_VERMELHO) : btnStyle}>
+          🗑
+        </button>
+      )}
+      {/* Item manual: botão "Remover" tira da lista */}
+      {row.ehManual && (
+        <button type="button" onClick={() => removerManual(row.uuid)}
+          title="Remover este item (criado manualmente)" style={btnStyle}>
+          🗑
+        </button>
+      )}
+      {/* Duplicar — sempre disponível, exceto status remover */}
+      {row.status !== "remover" && (
+        <button type="button" onClick={() => duplicarLinha(row)}
+          title="Duplicar este pagamento" style={btnStyle}>
+          ⎘
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ListaObservacoes({ texto }) {
   const cru = String(texto || "").trim();
   if (!cru) return null;
