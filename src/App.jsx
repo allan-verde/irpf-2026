@@ -61,6 +61,31 @@ function bemAtualizavel(bem) {
   return true;
 }
 
+// Códigos oficiais de relação de dependência (Manual IRPF 2026 p. 359).
+// Fonte autoritativa: agente/KNOWLEDGE_06D_dependentes.md.
+// Códigos 23 e 26 (com deficiência) não têm limite de idade — STF ADI 5583/DF.
+const DEPENDENTE_CODIGOS = {
+  "11": "Companheiro(a) ou cônjuge",
+  "21": "Filho(a) ou enteado(a) até 21 anos",
+  "22": "Filho(a) ou enteado(a) universitário até 24 anos",
+  "23": "Filho(a) ou enteado(a) com deficiência",
+  "24": "Irmão/neto/bisneto sem arrimo, com guarda judicial, até 21 anos",
+  "25": "Irmão/neto/bisneto universitário até 24 anos",
+  "26": "Irmão/neto/bisneto com deficiência",
+  "31": "Pais, avós e bisavós (renda 2025 até R$ 28.467,20)",
+  "41": "Menor pobre com guarda judicial, até 21 anos",
+  "51": "Pessoa absolutamente incapaz (sob tutela/curatela)",
+};
+
+// Retorna a descrição oficial pra um código de parentesco. Retorna null se o código
+// não estiver na tabela oficial (.DBK pode conter código inválido por corrupção ou
+// preenchimento manual fora do PGD — caller decide como sinalizar).
+function descricaoParentesco(cod) {
+  if (cod == null) return null;
+  const limpo = String(cod).replace(/\D/g, "").padStart(2, "0");
+  return DEPENDENTE_CODIGOS[limpo] || null;
+}
+
 // ============================================================
 // CRC32, encoding latin-1, formatadores
 // ============================================================
@@ -1228,7 +1253,9 @@ function montarPromptPatch(templateInfo, reciboInfo, temFormulario, modoAgente, 
   if (templateInfo?.dependentes.length) {
     linhasResumo.push(`DEPENDENTES — ${templateInfo.dependentes.length}:`);
     templateInfo.dependentes.forEach((d, i) => {
-      linhasResumo.push(`  D${i + 1}: CPF=${d.cpf} "${d.nome}" nasc=${d.data_nascimento} parentesco=${d.parentesco_cod}`);
+      const desc = descricaoParentesco(d.parentesco_cod);
+      const sufixo = desc ? ` — ${desc}` : ` — código não-reconhecido (verificar)`;
+      linhasResumo.push(`  D${i + 1}: CPF=${d.cpf} "${d.nome}" nasc=${d.data_nascimento} parentesco=${d.parentesco_cod}${sufixo}`);
     });
     linhasResumo.push("");
   }
@@ -1332,8 +1359,8 @@ REGRAS DURAS:
 10. **NÃO emita itens em "*_atualizados" com valores IDÊNTICOS aos do template.** Se o informe confirma um saldo que já está no template (ex: poupança continua com R$ 0,14, CDB continua zerado), OMITA o item — não há nada pra atualizar. Só inclua em "bens_atualizados" / "dividas_atualizadas" / "rendimentos_isentos_atualizados" / "fontes_pagadoras" quando ao menos UM valor numérico mudou em relação ao template.
 11. **VALORES SÃO SEMPRE POSITIVOS (>= 0). NUNCA emita valor negativo em bem, dívida, fonte ou rendimento — o PGD rejeita o arquivo se houver sinal de menos no campo numérico.** Em particular: **SALDO NEGATIVO DE CONTA CORRENTE** (cheque especial / overdraft / "saldo devedor") é uma **DÍVIDA** (reg 28, código 11), NÃO um bem com valor negativo. Coloque em "dividas_novas_aviso" com valor positivo (o módulo do saldo devedor). Da mesma forma, saldos a descoberto em cartão, conta-garantia, etc. são dívidas — nunca bens negativos.
 12. **valor_pago em dívidas** corresponde ao campo "Valor Pago em ${anoCalAtual}" do PGD — é a SOMA de tudo que o contribuinte PAGOU dessa dívida no ano (amortização do principal + juros + outros encargos). Em informes de financiamento aparece como "Prestações pagas em ${anoCalAtual}" ou somatório dos pagamentos. Se o informe traz separado (ex.: "Juros pagos R$ 483,85" e "Amortização R$ 6.033,11"), some os dois pra obter valor_pago. Só emita valor_pago quando o informe der essa informação concreta.
-13. **PAGAMENTOS EFETUADOS (ficha "Pagamentos Efetuados" do PGD, reg 26 do .DBK):** representa o que o contribuinte PAGOU pra deduzir do IR (ou só declarar, mesmo sem deduzir). **Códigos OFICIAIS do PGD (use estes EXATOS):**
-    - **01** Despesas com instrução no Brasil (escola, faculdade, curso técnico) — limite anual por dependente
+13. **PAGAMENTOS EFETUADOS (ficha "Pagamentos Efetuados" do PGD, reg 26 do .DBK):** representa o que o contribuinte PAGOU pra deduzir do IR (ou só declarar, mesmo sem deduzir). **Códigos OFICIAIS do PGD (Manual IRPF 2026 p. 363 — use estes EXATOS, NÃO invente código):**
+    - **01** Despesas com instrução no Brasil (escola, faculdade, curso técnico — limite anual por dependente)
     - **02** Despesas com instrução no exterior
     - **09** Fonoaudiólogos no Brasil (PF)
     - **10** Médicos no Brasil (PF)
@@ -1341,29 +1368,61 @@ REGRAS DURAS:
     - **12** Psicólogos no Brasil (PF)
     - **13** Fisioterapeutas no Brasil (PF)
     - **14** Terapeutas ocupacionais no Brasil (PF)
-    - **15–20** mesmas categorias profissionais, no exterior
-    - **21** Hospitais, clínicas, laboratórios e demais PJ que prestam serviços médicos/odontológicos no Brasil
-    - **22** Aparelhos ortopédicos e próteses
-    - **23** Hospitais/clínicas no exterior
-    - **24** Seguros saúde no Brasil
-    - **26** Planos de saúde / operadoras no Brasil
-    - **27** Planos de saúde no exterior
-    - **33** Pensão alimentícia paga (decisão judicial ou acordo extrajudicial)
-    - **36** Previdência complementar (PGBL/FAPI)
-    - **37** Contribuição previdenciária INSS (empregado doméstico, autônomo etc.)
-    - **40** Cooperativa odontológica / médica
-    - **60** Aluguel pago (informativo, não dedutível)
-    - **70** Honorários advocatícios pagos relacionados a pensão judicial
-    - **72** Pensão judicial não-alimentícia
-    Use o código CORRETO conforme o tipo. Pra uma LTDA odontológica (CNPJ), use 21. Pra um dentista pessoa física (CPF), use 11. Pra mensalidade escolar, use **01**. Se houver INFORME/RECIBO que confirme pagamento JÁ NO TEMPLATE: "pagamentos_atualizados". Se for NOVO: "pagamentos_novos_aviso".
+    - **15–20** Mesmos profissionais PF, mas no exterior (15 médico, 16 dentista, 17 psicólogo, 18 fisio, 19 terapeuta ocupacional, 20 fono)
+    - **21** Hospitais, clínicas e laboratórios com saúde humana no Brasil (PJ)
+    - **22** Hospitais, clínicas e laboratórios com saúde humana no exterior (PJ)
+    - **26** Planos de saúde no Brasil
+    - **30** Pensão alimentícia judicial paga a residente no Brasil ← USE ESTE como padrão pra pensão alimentícia judicial
+    - **31** Pensão alimentícia judicial paga a não-residente no Brasil
+    - **33** Pensão alimentícia (separação/divórcio por escritura pública) paga a residente no Brasil
+    - **34** Pensão alimentícia (separação/divórcio por escritura pública) paga a não-residente no Brasil
+    - **36** Previdência Complementar (PGBL, FAPI, previdência privada aberta — dedutível até 12% da renda tributável)
+    - **37** Previdência complementar fechada/aberta de servidor público (§15 art. 40 CF — Funpresp, Postalis, Previ, etc.)
+    - **60** Advogados — honorários relativos a ações judiciais, exceto trabalhistas
+    - **61** Advogados — honorários relativos a ações judiciais trabalhistas
+    - **62** Advogados — demais honorários (consultivos, administrativos)
+    - **66** Engenheiros, arquitetos e demais profissionais liberais (exceto advogado, admin imóvel, corretor)
+    - **70** Aluguéis de imóveis
+    - **71** Administrador de imóvel
+    - **72** Corretor de imóveis
+    - **76** Arrendamento rural
+    - **99** Outros pagamentos (use quando nada acima se aplicar — descreva no "resumo")
+
+    **Decisões comuns:** LTDA odontológica/clínica/cooperativa médica (CNPJ) → **21**. Dentista PF (CPF) → **11**. Mensalidade escolar (mesmo escola LTDA) → **01**. Plano de saúde (Unimed, Bradesco, etc.) → **26**. Advogado em ação judicial não-trabalhista → **60**, trabalhista → **61**. Aluguel pago a PF ou PJ → **70**. Pensão alimentícia: padrão **30** (judicial residente) — só use 31/33/34 se há evidência clara de não-residente ou escritura pública.
+
+    **NÃO use** códigos que NÃO estão na lista acima (especialmente os antigos chutes: 24/25/27 não existem pra saúde; 23 era off-by-one — exterior é 22; 40 não existe pra cooperativa — use 21; 72 não é pensão — é corretor de imóveis). Se nada se aplicar, use **99** com "resumo" descritivo.
+
+    Pagamento JÁ no template + informe atualiza: "pagamentos_atualizados". Se for NOVO: "pagamentos_novos_aviso".
 14. **Pagamentos com R$ 0,00 no template DEVEM ser sugeridos pra REMOÇÃO** — coloque em "pagamentos_a_remover" com motivo "pagamento R$ 0,00 sem recorrência em ${anoCalAtual}". Eles foram declarados ano passado mas não recorreram este ano. Se houver informe atualizando o valor pra > 0, NÃO remova — coloque em "pagamentos_atualizados".
-15. **RENDIMENTOS SUJEITOS À TRIBUTAÇÃO EXCLUSIVA / DEFINITIVA (ficha do PGD, reg 88 do .DBK):** valores que já tiveram IR retido na fonte de forma definitiva e não compõem o ajuste anual. Códigos comuns:
-    - **06** Rendimentos de aplicações financeiras (CDB pré, RDB, Tesouro Direto, LCI/LCA não-isenta, fundos)
-    - **09** Lucros e dividendos isentos? não, são reg 86 → use só pra confirmação
-    - **10** 13º salário (parte que tributou exclusivamente)
-    - **12** Ganhos de capital em alienação de bens
-    - **18** Juros sobre capital próprio (JCP)
-    - **24** Outros rendimentos sujeitos a tributação exclusiva
+15. **RENDIMENTOS SUJEITOS À TRIBUTAÇÃO EXCLUSIVA / DEFINITIVA (ficha do PGD, reg 88 do .DBK):** valores que já tiveram IR retido na fonte de forma definitiva e não compõem o ajuste anual. **Códigos OFICIAIS do PGD (Manual IRPF 2026 p. 114-120 — use estes EXATOS, NÃO invente código):**
+
+    **Entrada manual (que você classifica diretamente)**:
+    - **06** Rendimentos de aplicações financeiras (CDB pré, RDB, fundos comuns/multimercado, FIF, swap, Tesouro Direto) — uso mais comum
+    - **10** Juros sobre capital próprio (JCP) — pago pela PJ ao sócio/acionista
+    - **11** Participação nos lucros ou resultados (PLR) — paga pela empresa empregadora
+    - **13** Prêmios líquidos em loterias de apostas de quota fixa (Lei 14.790/2023) — sites de apostas autorizados pela ANJ/Mefin
+    - **99** Outros rendimentos exclusivos não tipados (prêmios em loteria tradicional, capitalização, VGBL em regime exclusivo, etc.)
+
+    **Transportados pelo programa (NÃO emitir em "_atualizados" nem "_novos_aviso" — mencionar em "observacoes" se identificar evidência)**:
+    - **01** 13º salário do titular (transportado da ficha PJ Titular)
+    - **02** Ganhos de capital em alienação de bens/direitos (transportado do GCAP 2025)
+    - **03** Ganhos de capital em moeda estrangeira (transportado do GCAP)
+    - **04** Ganhos de capital em moeda em espécie (transportado do GCAP)
+    - **05** Ganhos líquidos em renda variável (transportado do Demonst. Renda Variável + FII/Fiagro)
+    - **07** RRA exclusiva titular (transportado da ficha RRA)
+    - **08** 13º salário dos dependentes (transportado da ficha PJ Dependentes)
+    - **09** RRA exclusiva dependentes (transportado da ficha RRA Dependentes)
+    - **12** Aplicações financeiras / Lucros / Dividendos no exterior — Lei 14.754/2023 (transportado da ficha Bens e Direitos)
+
+    **Decisões comuns**:
+    - Informe de banco com **rendimento de CDB/RDB/fundo comum** → **06**
+    - **Lucros/dividendos** distribuídos pela empresa → NÃO é exclusivo, é **isento código 09** (regra 5, ver KNOWLEDGE_06G)
+    - **JCP** recebido → **10** (não confundir com lucros/dividendos)
+    - **PLR** da empregadora → **11**
+    - **Poupança / LCI / LCA / CRI / CRA / LIG** → NÃO é exclusivo, é **isento código 12** (regra 5)
+
+    **NÃO use** códigos que NÃO estão na lista acima (especialmente os antigos chutes: 18 não existe — JCP é **10** não 18; 24 não existe — Outros é **99**; 12 não é "ganhos de capital" — é "Exterior Lei 14.754"; 10 não é "13º salário" — 13º manual é **01**).
+
     Se houver informe atualizando valor de rendimento exclusivo JÁ no template (mesma fonte CNPJ + mesmo código): "rendimentos_exclusivos_atualizados". Se for NOVO (fonte/código não está no template): "rendimentos_exclusivos_novos_aviso". Se zerado no informe: "rendimentos_exclusivos_a_remover".
 16. **ANTI-DUPLICAÇÃO**: antes de propor qualquer item NOVO (bem, dívida, fonte, rendimento isento, exclusivo, pagamento), VERIFIQUE se já existe item equivalente no resumo do template acima. Critério de matching:
     - **Bens** (B1, B2, ...): mesma raiz de CNPJ + mesma natureza (CDB ≈ RDB ≈ aplicação financeira no mesmo banco). Se o cliente já tem uma aplicação financeira no CNPJ 30.680.829 (Nu Financeira) listada em rendimentos exclusivos (reg 88) ou em bens, NÃO crie outra com a mesma fonte — atualize a existente em "bens_atualizados" ou "rendimentos_exclusivos_atualizados".
@@ -1829,6 +1888,115 @@ function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
     }
     // Caso intermediário (template tem N != 12 reg 22) é raro/quebrado — só logamos
   }
+
+  // ============================================================
+  // EDIÇÕES MANUAIS em itens neutros/revisar/repetir (sem proposta da IA)
+  // ============================================================
+  // O contador pode usar o lápis (✎ Editar) em QUALQUER card do template, mesmo
+  // os que ficaram sem proposta da IA (status neutro, revisar ou repetir auto).
+  // O override fica em manualOverrides[`<tipo>_atualizado_<idx>`]. Aqui aplicamos
+  // esses overrides no .DBK final, pra cada tipo.
+  //
+  // Critérios pra aplicar: item NÃO está em *_atualizados (já foi tocado acima),
+  // NÃO está em *_a_remover (vai sumir), e NÃO foi marcado pra exclusão manual
+  // (revisar_remover).
+
+  // Bens neutros/revisar/repetir
+  (templateInfo.bens || []).forEach((tpl, i) => {
+    const idx = i + 1;
+    const ov = manualOverrides[`bem_atualizado_${idx}`];
+    if (!ov) return;
+    if ((patch.bens_atualizados || []).some(x => x.idx === idx)) return;
+    if ((patch.bens_a_remover || []).some(x => x.idx === idx)) return;
+    if (aprovacoes[`bem_revisar_remover_${idx}`] === true) return;
+    if (!bemAtualizavel(tpl)) return;
+    const linhaBase = novasLinhas[tpl._idx] != null ? novasLinhas[tpl._idx] : linhasOriginais[tpl._idx];
+    novasLinhas[tpl._idx] = modificarReg27(linhaBase, { idx, ...ov });
+    aplicadas.push(`bem B${idx} (edição manual)`);
+  });
+
+  // Dívidas neutras/revisar
+  (templateInfo.dividas || []).forEach((tpl, i) => {
+    const idx = i + 1;
+    const ov = manualOverrides[`divida_atualizada_${idx}`];
+    if (!ov) return;
+    if ((patch.dividas_atualizadas || []).some(x => x.idx === idx)) return;
+    if ((patch.dividas_a_remover || []).some(x => x.idx === idx)) return;
+    if (aprovacoes[`divida_revisar_remover_${idx}`] === true) return;
+    const linhaBase = novasLinhas[tpl._idx] != null ? novasLinhas[tpl._idx] : linhasOriginais[tpl._idx];
+    novasLinhas[tpl._idx] = modificarReg28(linhaBase, { idx, ...ov });
+    aplicadas.push(`dívida V${idx} (edição manual)`);
+  });
+
+  // Fontes pagadoras neutras (sem proposta da IA)
+  (templateInfo.fontes || []).forEach((tpl, i) => {
+    const idx = i + 1;
+    const ov = manualOverrides[`fonte_atualizada_${idx}`];
+    if (!ov) return;
+    // Se a IA já propôs atualização pra essa fonte (match por CNPJ), pula
+    const jaTocada = (patch.fontes_pagadoras || []).some((f) => {
+      const cnpjLimpo = String(f.cnpj || "").replace(/\D/g, "").padStart(14, "0");
+      return cnpjLimpo === tpl.cnpj;
+    });
+    if (jaTocada) return;
+    const linhaBase = novasLinhas[tpl._idx] != null ? novasLinhas[tpl._idx] : linhasOriginais[tpl._idx];
+    novasLinhas[tpl._idx] = modificarReg21(linhaBase, ov);
+    aplicadas.push(`fonte F${idx} (edição manual)`);
+  });
+
+  // Pagamentos neutros/revisar
+  (templateInfo.pagamentos || []).forEach((tpl, i) => {
+    const idx = i + 1;
+    const ov = manualOverrides[`pag_atualizado_${idx}`];
+    if (!ov) return;
+    if ((patch.pagamentos_atualizados || []).some(x => x.idx === idx)) return;
+    if ((patch.pagamentos_a_remover || []).some(x => x.idx === idx)) return;
+    if (aprovacoes[`pag_revisar_remover_${idx}`] === true) return;
+    const linhaBase = novasLinhas[tpl._idx] != null ? novasLinhas[tpl._idx] : linhasOriginais[tpl._idx];
+    novasLinhas[tpl._idx] = modificarReg26(linhaBase, { idx, ...ov });
+    aplicadas.push(`pagamento P${idx} (edição manual)`);
+  });
+
+  // Isentos neutros/revisar — APENAS reg 86 (genérico).
+  // Reg 84 (tipado) está bloqueado por CRC desconhecido. Override em reg 84 é silenciosamente
+  // ignorado (mesma proteção do loop antigo de rendimentos_isentos_atualizados).
+  (templateInfo.rendIsentos || []).forEach((tpl, i) => {
+    const idx = i + 1;
+    const ov = manualOverrides[`isento_atualizado_${idx}`];
+    if (!ov) return;
+    if ((patch.rendimentos_isentos_atualizados || []).some(x => x.idx === idx)) return;
+    if ((patch.rendimentos_isentos_a_remover || []).some(x => x.idx === idx)) return;
+    if (aprovacoes[`isento_revisar_remover_${idx}`] === true) return;
+    if (tpl.tipo_reg !== "86") return; // reg 84 bloqueado
+    const linhaBase = novasLinhas[tpl._idx] != null ? novasLinhas[tpl._idx] : linhasOriginais[tpl._idx];
+    novasLinhas[tpl._idx] = modificarReg86(linhaBase, ov);
+    aplicadas.push(`isento I${idx} (edição manual)`);
+  });
+
+  // Exclusivos neutros/revisar
+  (templateInfo.rendExclusivos || []).forEach((tpl, i) => {
+    const idx = i + 1;
+    const ov = manualOverrides[`excl_atualizado_${idx}`];
+    if (!ov) return;
+    if ((patch.rendimentos_exclusivos_atualizados || []).some(x => x.idx === idx)) return;
+    if ((patch.rendimentos_exclusivos_a_remover || []).some(x => x.idx === idx)) return;
+    if (aprovacoes[`excl_revisar_remover_${idx}`] === true) return;
+    const linhaBase = novasLinhas[tpl._idx] != null ? novasLinhas[tpl._idx] : linhasOriginais[tpl._idx];
+    novasLinhas[tpl._idx] = modificarReg88(linhaBase, ov);
+    aplicadas.push(`exclusivo E${idx} (edição manual)`);
+  });
+
+  // Dependentes neutros — overrides em reg 25
+  (templateInfo.dependentes || []).forEach((tpl, i) => {
+    const idx = i + 1;
+    const ov = manualOverrides[`dep_atualizado_${idx}`];
+    if (!ov) return;
+    if ((patch.dependentes_atualizados || []).some(x => x.idx === idx)) return;
+    if ((patch.dependentes_a_remover || []).some(x => x.idx === idx)) return;
+    const linhaBase = novasLinhas[tpl._idx] != null ? novasLinhas[tpl._idx] : linhasOriginais[tpl._idx];
+    novasLinhas[tpl._idx] = modificarReg25(linhaBase, ov);
+    aplicadas.push(`dependente D${idx} (edição manual)`);
+  });
 
   // Inserir as novas linhas ANTES do T9 e atualizar o footer
   if (linhasAInserir.length > 0 && idxT9 >= 0) {
@@ -4132,20 +4300,42 @@ async function gerarPdfResumo(dadosExtraidos, reciboInfo) {
 
 function FileSlot({ rotulo, descricao, accept, file, onChange, multi, files, protegido }) {
   const inputRef = useRef(null);
+  const [hover, setHover] = useState(false);
   const items = multi ? files || [] : file ? [file] : [];
   const cor = protegido ? "#c89b2a" : items.length ? "#2d5a3d" : "#d4cfc1";
   const bg = protegido ? "#fdf4e0" : items.length ? "#eef4ef" : "#fcfaf4";
   return (
     <div
-      className="border p-4 transition-colors cursor-pointer"
-      style={{ borderColor: cor, background: bg }}
+      role="button"
+      tabIndex={0}
       onClick={() => inputRef.current?.click()}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); inputRef.current?.click(); } }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        border: `1px solid ${cor}`,
+        padding: 16,
+        background: bg,
+        cursor: "pointer",
+        transition: "transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease",
+        transform: hover ? "translateY(-1px)" : "none",
+        boxShadow: hover ? "0 4px 10px rgba(26,22,18,0.06)" : "none",
+        borderColor: hover ? (protegido ? "#a87f15" : items.length ? "#1f4530" : "#a89e8a") : cor,
+        userSelect: "none",
+      }}
     >
-      <div className="flex items-baseline justify-between gap-2 mb-1">
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: descricao ? 4 : 12 }}>
         <span style={{ fontFamily: "'Fraunces', serif", fontSize: 14, fontWeight: 500, color: "#1a1612" }}>{rotulo}</span>
       </div>
-      <div style={{ fontSize: 11, color: "#6b6256", marginBottom: 10, lineHeight: 1.4 }}>{descricao}</div>
-      <input ref={inputRef} type="file" accept={accept} multiple={multi} className="hidden"
+      {descricao && (
+        <div style={{ fontSize: 11, color: "#6b6256", marginBottom: 10, lineHeight: 1.4 }}>{descricao}</div>
+      )}
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        multiple={multi}
+        style={{ display: "none" }}
         onChange={(e) => {
           const fs = Array.from(e.target.files || []);
           onChange(multi ? fs : fs[0] || null);
@@ -4156,8 +4346,8 @@ function FileSlot({ rotulo, descricao, accept, file, onChange, multi, files, pro
       ) : (
         <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: protegido ? "#8a6a14" : "#2d5a3d" }}>
           {items.map((f, i) => (
-            <div key={i} className="flex justify-between items-center" style={{ marginTop: i > 0 ? 4 : 0 }}>
-              <span className="truncate" style={{ maxWidth: "80%" }}>{protegido ? "🔒" : "✓"} {f.name}</span>
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: i > 0 ? 4 : 0 }}>
+              <span style={{ maxWidth: "80%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{protegido ? "🔒" : "✓"} {f.name}</span>
               <span style={{ color: "#8a7f6e", fontSize: 10 }}>{(f.size / 1024).toFixed(0)} KB</span>
             </div>
           ))}
@@ -4399,13 +4589,57 @@ function mesclarItem(itemTemplate, patchItem) {
 function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes = () => {}, manualOverrides = {}, setManualOverrides = () => {} }) {
   if (!templateInfo) return null;
 
-  // Helper: gera os props pro checkbox de remoção manual em itens REVISAR.
+  // ============================================================
+  // Fábricas de "acoes" pro ItemCard — controlam aprovação e exclusão inline.
+  // Cada item da lista de cards (status alterado/novo/remover/revisar/neutro) gera
+  // seu próprio objeto `acoes`, que aciona setAprovacoes pra registrar a escolha.
+  // Default: aceito (true). Usuário pode rejeitar/excluir clicando no botão da card.
+  // ============================================================
+
+  // Ações pra item com proposta de ATUALIZAÇÃO da IA (status=alterado).
+  // chave: ex "fonte_<cnpj>", "bem_<idx>", "pag_<idx>" — mesma chave consumida em aplicarPatch.
+  const acoesAlterado = (chave) => ({
+    aprovar: {
+      aprovado: aprovacoes[chave] !== false,
+      label: "Aceitar alteração",
+      cor: COR_VERDE,
+      onToggle: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
+    },
+  });
+
+  // Ações pra item NOVO proposto pela IA (status=novo).
+  // chave: ex "fonte_nova_<i>", "bem_novo_<i>".
+  const acoesNovo = (chave) => ({
+    aprovar: {
+      aprovado: aprovacoes[chave] !== false,
+      label: "Aceitar item novo",
+      cor: COR_VERDE,
+      onToggle: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
+    },
+  });
+
+  // Ações pra item que a IA propôs REMOVER (status=remover).
+  // chave: ex "pag_remover_<idx>", "isento_remover_<idx>", "excl_remover_<idx>", "dep_remover_<idx>".
+  const acoesRemover = (chave) => ({
+    aprovar: {
+      aprovado: aprovacoes[chave] !== false,
+      label: "Confirmar remoção",
+      cor: COR_VERMELHO,
+      onToggle: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
+    },
+  });
+
+  // Ações pra item NEUTRO (sem proposta) ou REVISAR (zerado) — só permite excluir.
   // chavePrefixo: ex "bem", "divida", "pag", "isento", "excl"
-  const propsRemoverRevisar = (chavePrefixo, idx) => {
+  // idx: índice do item no template
+  const acoesExcluir = (chavePrefixo, idx) => {
     const chave = `${chavePrefixo}_revisar_remover_${idx}`;
     return {
-      marcadoRemover: aprovacoes[chave] === true,
-      onMarcarRemover: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
+      excluir: {
+        marcado: aprovacoes[chave] === true,
+        label: "Excluir do .DBK",
+        onToggle: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
+      },
     };
   };
 
@@ -4428,33 +4662,63 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
   };
 
   // Helper: gera props completas pra ItemCard de item ATUALIZADO pela IA (status=alterado).
-  // Inclui o item já com override aplicado + callbacks de edição. Pra status neutro/revisar,
-  // não habilita edição (Fase 1 só edita itens propostos pela IA).
+  // Inclui o item já com override aplicado + callbacks de edição + ações de aprovação.
+  // Para status remover, retorna acoes de confirmação de remoção (sem editar — item vai sumir).
+  // Para neutro/revisar/repetir, retorna acoes de excluir + permite editar manualmente.
+  // O override edita o item e é aplicado no .DBK pelo aplicarPatch (mesmo em itens neutros).
   const cardPropsAtualizado = (tipo, idx, status, item) => {
-    if (status !== "alterado") return { item };
     const chaveOv = `${tipo}_atualizado_${idx}`;
-    return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv) };
+    if (status === "alterado") {
+      const chaveAprov = `${tipo}_${idx}`;
+      return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv), acoes: acoesAlterado(chaveAprov) };
+    }
+    if (status === "remover") {
+      const chaveAprov = `${tipo}_remover_${idx}`;
+      return { item, acoes: acoesRemover(chaveAprov) };
+    }
+    // status neutro / revisar / repetir — permite excluir E editar manualmente
+    return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv), acoes: acoesExcluir(tipo, idx) };
   };
 
   // Helper: gera props completas pra ItemCard de item NOVO (status=novo).
   // Edição sempre habilitada — esses itens vieram inteiros da IA, então faz sentido editar.
   const cardPropsNovo = (tipo, i, item) => {
     const chaveOv = `${tipo}_novo_${i}`;
-    return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv) };
+    return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv), acoes: acoesNovo(chaveOv) };
   };
 
   const Bloco = ({ titulo, itens, vazio }) => {
+    const cabecalho = (
+      <h4 style={{
+        fontFamily: "'Fraunces', serif",
+        fontWeight: 600,
+        fontSize: 19,
+        letterSpacing: -0.2,
+        color: COR_TINTA,
+        margin: "0 0 12px",
+        paddingBottom: 8,
+        borderBottom: `1px solid ${COR_BORDA}`,
+        display: "flex",
+        alignItems: "baseline",
+        gap: 8,
+      }}>
+        <span>{titulo}</span>
+        {itens && itens.length > 0 && (
+          <span style={{ color: COR_SUTIL, fontWeight: 400, fontSize: 13, letterSpacing: 0 }}>
+            · {itens.length}
+          </span>
+        )}
+      </h4>
+    );
     if (!itens || itens.length === 0) return (
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 11, color: COR_SUTIL, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6, fontWeight: 500 }}>{titulo}</div>
-        <div style={{ fontSize: 12, color: COR_SUTIL, fontStyle: "italic", padding: "8px 12px", background: "#f5f1e8" }}>{vazio || "(vazio no template)"}</div>
+      <div style={{ marginBottom: 28 }}>
+        {cabecalho}
+        <div style={{ fontSize: 12, color: COR_SUTIL, fontStyle: "italic", padding: "10px 14px", background: "#f5f1e8" }}>{vazio || "(vazio no template)"}</div>
       </div>
     );
     return (
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 11, color: COR_SUTIL, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6, fontWeight: 500 }}>
-          {titulo} <span style={{ color: COR_TINTA }}>· {itens.length}</span>
-        </div>
+      <div style={{ marginBottom: 28 }}>
+        {cabecalho}
         {itens}
       </div>
     );
@@ -4550,7 +4814,7 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
         if (v != null && v !== "") item[k] = v;
       }
     }
-    return <ItemCard key={`b${i}`} idx={i + 1} prefixo="B" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("bem", i + 1)} {...cardPropsAtualizado("bem", i + 1, status, item)} />;
+    return <ItemCard key={`b${i}`} idx={i + 1} prefixo="B" getHeader={(x) => x.resumo} status={status}{...cardPropsAtualizado("bem", i + 1, status, item)} />;
   });
   const bensNovosCards = (patch?.bens_novos_aviso || []).map((b, i) => {
     // suporta tanto string legada quanto objeto novo
@@ -4586,7 +4850,7 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
         if (v != null && v !== "") item[k] = v;
       }
     }
-    return <ItemCard key={`d${i}`} idx={i + 1} prefixo="V" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("divida", i + 1)} {...cardPropsAtualizado("divida", i + 1, status, item)} />;
+    return <ItemCard key={`d${i}`} idx={i + 1} prefixo="V" getHeader={(x) => x.resumo} status={status}{...cardPropsAtualizado("divida", i + 1, status, item)} />;
   });
   const dividasNovasCards = (patch?.dividas_novas_aviso || []).map((d, i) => {
     if (typeof d === "string") return <ItemCard key={`dn${i}`} idx={(templateInfo.dividas?.length || 0) + i + 1} prefixo="V" getHeader={(x) => x.resumo} status="novo" {...cardPropsNovo("divida", i, { resumo: d })} />;
@@ -4631,11 +4895,21 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     } else if (idade != null && idade > 21) {
       alertaIdade = { texto: `${idade} anos`, cor: COR_AMBAR, titulo: `Entre 22 e 24 — só se aceita como dependente se cursando ensino superior/técnico (tipo 22 ou 25). Idade no fim de ${labelAnoAtu}` };
     }
-    return <ItemCard key={`dep${i}`} item={item} idx={i + 1} prefixo="D" getHeader={(x) => x.resumo} status={status} alertaIdade={alertaIdade} />;
+    // Ações por status: dep_<idx> pra alteração, dep_remover_<idx> pra confirmação de remoção.
+    // Dependentes não suportam exclusão manual (sem dep_revisar_remover no aplicarPatch).
+    // Edição manual via override: aplicada pelo loop dedicado no aplicarPatch (reg 25).
+    const acoesDep = status === "alterado" ? acoesAlterado(`dep_${i + 1}`)
+      : status === "remover" ? acoesRemover(`dep_remover_${i + 1}`)
+      : undefined;
+    const chaveDepOv = `dep_atualizado_${i + 1}`;
+    const propsEdicaoDep = status !== "remover" ? propsEdicao(chaveDepOv) : {};
+    const itemDep = status !== "remover" ? mesclarOverride(item, chaveDepOv) : item;
+    return <ItemCard key={`dep${i}`} item={itemDep} idx={i + 1} prefixo="D" getHeader={(x) => x.resumo} status={status} alertaIdade={alertaIdade} acoes={acoesDep} {...propsEdicaoDep} />;
   });
   const dependentesNovosCards = (patch?.dependentes_novos_aviso || []).map((d, i) => {
-    if (typeof d === "string") return <ItemCard key={`depn${i}`} item={{ resumo: d }} idx={(templateInfo.dependentes?.length || 0) + i + 1} prefixo="D" getHeader={(x) => x.resumo} status="novo" />;
-    return <ItemCard key={`depn${i}`} item={d} idx={(templateInfo.dependentes?.length || 0) + i + 1} prefixo="D" getHeader={(x) => x.resumo || x.nome} status="novo" />;
+    const acoesDepNovo = acoesNovo(`dep_novo_${i}`);
+    if (typeof d === "string") return <ItemCard key={`depn${i}`} item={{ resumo: d }} idx={(templateInfo.dependentes?.length || 0) + i + 1} prefixo="D" getHeader={(x) => x.resumo} status="novo" acoes={acoesDepNovo} />;
+    return <ItemCard key={`depn${i}`} item={d} idx={(templateInfo.dependentes?.length || 0) + i + 1} prefixo="D" getHeader={(x) => x.resumo || x.nome} status="novo" acoes={acoesDepNovo} />;
   });
 
   // Rendimentos isentos
@@ -4649,7 +4923,7 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
       valor_anterior: r.valor,
       valor: patchItem?.valor ?? r.valor,
     }, patchItem);
-    return <ItemCard key={`ri${i}`} idx={i + 1} prefixo="RI" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("isento", i + 1)} {...cardPropsAtualizado("isento", i + 1, status, item)} />;
+    return <ItemCard key={`ri${i}`} idx={i + 1} prefixo="RI" getHeader={(x) => x.resumo} status={status}{...cardPropsAtualizado("isento", i + 1, status, item)} />;
   });
 
   const pagamentosCards = (templateInfo.pagamentos || []).map((p, i) => {
@@ -4664,7 +4938,7 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     if (patchItem && patchItem.valor_pago != null) {
       item.valor_pago_atualizado = patchItem.valor_pago;
     }
-    return <ItemCard key={`p${i}`} idx={i + 1} prefixo="P" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("pag", i + 1)} {...cardPropsAtualizado("pag", i + 1, status, item)} />;
+    return <ItemCard key={`p${i}`} idx={i + 1} prefixo="P" getHeader={(x) => x.resumo} status={status}{...cardPropsAtualizado("pag", i + 1, status, item)} />;
   });
   const pagamentosNovosCards = (patch?.pagamentos_novos_aviso || []).map((p, i) => {
     if (typeof p === "string") return <ItemCard key={`pn${i}`} idx={(templateInfo.pagamentos?.length || 0) + i + 1} prefixo="P" getHeader={(x) => x.resumo} status="novo" {...cardPropsNovo("pag", i, { resumo: p })} />;
@@ -4682,7 +4956,7 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
       valor: e.valor,
     };
     if (patchItem && patchItem.valor != null) item.valor_atualizado = patchItem.valor;
-    return <ItemCard key={`re${i}`} idx={i + 1} prefixo="E" getHeader={(x) => x.resumo} status={status} {...propsRemoverRevisar("excl", i + 1)} {...cardPropsAtualizado("excl", i + 1, status, item)} />;
+    return <ItemCard key={`re${i}`} idx={i + 1} prefixo="E" getHeader={(x) => x.resumo} status={status}{...cardPropsAtualizado("excl", i + 1, status, item)} />;
   });
   const rendExclusivosNovosCards = (patch?.rendimentos_exclusivos_novos_aviso || []).map((e, i) => {
     if (typeof e === "string") return <ItemCard key={`ren${i}`} idx={(templateInfo.rendExclusivos?.length || 0) + i + 1} prefixo="E" getHeader={(x) => x.resumo} status="novo" {...cardPropsNovo("excl", i, { resumo: e })} />;
@@ -4696,9 +4970,9 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     (templateInfo.pagamentos || []).some(p => Number(p.valor_pago) === 0);
 
   return (
-    <div style={{ marginTop: 18 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-        <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 18, margin: 0 }}>
+    <div style={{ marginTop: 28 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8, paddingBottom: 8, borderBottom: `1px solid ${COR_BORDA}` }}>
+        <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 22, letterSpacing: -0.3, margin: 0 }}>
           Conteúdo do template
         </h3>
         {(patch || temItemRevisar) && (
@@ -4734,6 +5008,75 @@ function Legenda({ cor, label }) {
       <span style={{ display: "inline-block", width: 10, height: 10, background: cor, borderRadius: 2 }} />
       {label}
     </span>
+  );
+}
+
+// Renderiza as observações da IA como lista. A string vem da IA com cada nota separada
+// por quebra de linha (\n), ou por hífen/bullet inicial. Dividimos por isso pra dar
+// estrutura visual quando o agente flagar muitos itens (doações, RRA, exterior, etc.).
+function ListaObservacoes({ texto }) {
+  const cru = String(texto || "").trim();
+  if (!cru) return null;
+
+  // Divide preferencialmente por quebra de linha. Como fallback, tenta dividir em
+  // sentenças completas terminadas em ponto + espaço + maiúscula (pra agente que devolve
+  // tudo em 1 linha).
+  let partes = cru.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  if (partes.length === 1) {
+    // Sem quebras de linha — tenta dividir por padrões frequentes:
+    // "DOAÇÃO IDENTIFICADA — ...", "RRA IDENTIFICADO — ...", bullets "- " ou "• ".
+    const alt = cru.split(/(?:^|\s)[-•]\s+|(?=\b(?:DOAÇÃO|RRA|ATENÇÃO|AVISO|NOTA|ALERTA)\b)/i)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (alt.length > 1) partes = alt;
+  }
+
+  if (partes.length <= 1) {
+    return (
+      <div style={{ padding: 14, background: "#fcfaf4", border: `1px solid ${COR_BORDA}`, fontSize: 13, lineHeight: 1.55, color: COR_TINTA }}>
+        {cru}
+      </div>
+    );
+  }
+
+  return (
+    <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+      {partes.map((linha, i) => (
+        <li
+          key={i}
+          style={{
+            padding: "10px 14px 10px 32px",
+            background: "#fcfaf4",
+            border: `1px solid ${COR_BORDA}`,
+            borderTop: i === 0 ? `1px solid ${COR_BORDA}` : "none",
+            fontSize: 13,
+            lineHeight: 1.55,
+            color: COR_TINTA,
+            position: "relative",
+          }}
+        >
+          <span
+            style={{
+              position: "absolute",
+              left: 12,
+              top: 12,
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              background: COR_AMBAR,
+              color: "#fff",
+              fontSize: 9,
+              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            aria-hidden
+          >{i + 1}</span>
+          {linha}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -4941,7 +5284,7 @@ function precisaCopiarDe2024(b) {
 // pra um form com todos os campos editáveis. Ao salvar, chama o callback com os
 // novos valores. Quando `editado=true`, mostra badge âmbar "EDITADO" indicando
 // que o contador sobrescreveu os valores propostos pela IA.
-function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", marcadoRemover, onMarcarRemover, onSalvarEdicao, editado, alertaIdade, camposDestacados }) {
+function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", onSalvarEdicao, editado, alertaIdade, camposDestacados, acoes }) {
   const skip = new Set(["origem", "_idx", ...ignoreKeys]);
   const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.neutro;
   const corBorda = color || cfg.borda;
@@ -4950,7 +5293,6 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
     ([k, v]) => !skip.has(k) && k !== "resumo" && v != null && v !== ""
   );
   const textoCompleto = formatarItemParaCopia(item, ignoreKeys);
-  const mostrarCheckRemover = status === "revisar" && typeof onMarcarRemover === "function";
   const podeEditar = typeof onSalvarEdicao === "function";
 
   const [editando, setEditando] = useState(false);
@@ -5035,26 +5377,6 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
           )}
         </div>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-          {podeEditar && !editando && (
-            <button
-              onClick={iniciarEdicao}
-              title="Editar campos deste item"
-              style={{
-                border: `1px solid ${COR_BORDA}`,
-                background: "transparent",
-                color: COR_SUTIL,
-                fontSize: 11,
-                padding: "2px 8px",
-                borderRadius: 3,
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COR_TINTA; e.currentTarget.style.color = COR_TINTA; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COR_BORDA; e.currentTarget.style.color = COR_SUTIL; }}
-            >
-              ✎ Editar
-            </button>
-          )}
           <BotaoCopiar texto={textoCompleto} label="Copiar item completo" size={12} />
         </div>
       </div>
@@ -5128,20 +5450,149 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
         )
       )}
 
-      {mostrarCheckRemover && !editando && (
-        <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${COR_BORDA}` }}>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, cursor: "pointer", color: COR_VERMELHO, fontWeight: 500 }}>
-            <input
-              type="checkbox"
-              checked={!!marcadoRemover}
-              onChange={(e) => onMarcarRemover(e.target.checked)}
-              style={{ cursor: "pointer" }}
-            />
-            Marcar pra remover do .DBK e do PDF
-          </label>
-        </div>
+      {(acoes || podeEditar) && !editando && (
+        <BarraAcoes acoes={acoes} podeEditar={podeEditar} onEditar={iniciarEdicao} />
       )}
     </div>
+  );
+}
+
+// Barra de ações inline no rodapé de cada ItemCard.
+// Substitui a antiga seção "Mudanças propostas" — cada item agora controla
+// sua própria aprovação/exclusão/edição diretamente.
+function BarraAcoes({ acoes, podeEditar, onEditar }) {
+  const { aprovar, excluir } = acoes || {};
+  if (!aprovar && !excluir && !podeEditar) return null;
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${COR_BORDA}`, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      {aprovar && (
+        <BotaoToggle
+          ativo={!!aprovar.aprovado}
+          onClick={() => aprovar.onToggle(!aprovar.aprovado)}
+          labelAtivo={`✓ ${aprovar.label}`}
+          labelInativo={`✗ Rejeitado — clique para reativar`}
+          corAtivo={aprovar.cor || COR_VERDE}
+          corInativo={COR_SUTIL}
+          title={aprovar.aprovado ? "Clique pra rejeitar essa mudança" : "Clique pra aceitar de volta"}
+        />
+      )}
+      {excluir && (
+        <BotaoToggle
+          ativo={!!excluir.marcado}
+          onClick={() => excluir.onToggle(!excluir.marcado)}
+          labelAtivo={`🗑 Marcado pra excluir — desmarcar`}
+          labelInativo={`🗑 ${excluir.label || "Excluir do .DBK"}`}
+          corAtivo={COR_VERMELHO}
+          corInativo={COR_SUTIL}
+          variante="outline"
+          title={excluir.marcado ? "Item será removido do .DBK final" : "Marcar este item pra ser removido do .DBK final"}
+        />
+      )}
+      {podeEditar && (
+        <button
+          type="button"
+          onClick={onEditar}
+          title="Editar campos deste item"
+          style={{
+            border: `1px solid ${COR_SUTIL}`,
+            background: "transparent",
+            color: COR_SUTIL,
+            fontSize: 11,
+            fontWeight: 500,
+            padding: "5px 11px",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            letterSpacing: 0.2,
+            transition: "background 100ms ease, color 100ms ease, border-color 100ms ease",
+            whiteSpace: "nowrap",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = COR_TINTA; e.currentTarget.style.color = COR_TINTA; e.currentTarget.style.background = "#f5f1e8"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = COR_SUTIL; e.currentTarget.style.color = COR_SUTIL; e.currentTarget.style.background = "transparent"; }}
+        >
+          ✎ Editar
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Botão de 2 estados: ativo (preenchido com cor de destaque) ou inativo (outline cinza).
+// Usado na barra de ações de cada item.
+function BotaoToggle({ ativo, onClick, labelAtivo, labelInativo, corAtivo, corInativo, variante = "solid", title }) {
+  const [hover, setHover] = useState(false);
+  const isOutline = variante === "outline";
+  const bgAtivo = isOutline ? "transparent" : corAtivo;
+  const fgAtivo = isOutline ? corAtivo : "#fff";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={title}
+      style={{
+        border: `1px solid ${ativo ? corAtivo : corInativo}`,
+        background: ativo ? bgAtivo : (hover ? "#f5f1e8" : "transparent"),
+        color: ativo ? fgAtivo : corInativo,
+        fontSize: 11,
+        fontWeight: 500,
+        padding: "5px 11px",
+        borderRadius: 3,
+        cursor: "pointer",
+        fontFamily: "inherit",
+        letterSpacing: 0.2,
+        transition: "background 100ms ease, color 100ms ease, border-color 100ms ease",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {ativo ? labelAtivo : labelInativo}
+    </button>
+  );
+}
+
+// Botão flutuante "voltar ao topo" — aparece quando o usuário rola pra baixo
+// e some quando está perto do topo. Click anima scroll até o topo.
+function BotaoVoltarAoTopo() {
+  const [visivel, setVisivel] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setVisivel(window.scrollY > 400);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+  if (!visivel) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+      aria-label="Voltar ao topo"
+      title="Voltar ao topo"
+      style={{
+        position: "fixed",
+        bottom: 28,
+        right: 28,
+        width: 48,
+        height: 48,
+        borderRadius: "50%",
+        background: COR_TINTA,
+        color: COR_PAPEL,
+        border: "none",
+        cursor: "pointer",
+        boxShadow: "0 6px 16px rgba(26,22,18,0.25)",
+        fontSize: 20,
+        lineHeight: 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+        transition: "transform 150ms ease, background 150ms ease",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.background = "#000"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.background = COR_TINTA; }}
+    >
+      ↑
+    </button>
   );
 }
 
@@ -6075,20 +6526,20 @@ function EstudioIRPFInner() {
         .hidden { display: none; }
       `}</style>
 
-      <header style={{ borderBottom: `1px solid ${COR_BORDA}`, padding: "32px 40px 24px", background: "#fdfbf6" }}>
+      <header style={{ borderBottom: `1px solid ${COR_BORDA}`, padding: "40px 40px 28px", background: "#fdfbf6" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", color: COR_SUTIL, marginBottom: 4 }}>
-              Escritório · Automação IRPF
+            <div style={{ fontSize: 11, letterSpacing: 1.8, textTransform: "uppercase", color: COR_SUTIL, fontWeight: 600, marginBottom: 8 }}>
+              ODos · Aceleradora de Negócios
             </div>
-            <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 38, letterSpacing: -1, margin: "0 0 4px" }}>
-              Estúdio do Cliente
+            <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 50, letterSpacing: -1.4, lineHeight: 1.02, margin: "0 0 10px" }}>
+              Café com o Leão
             </h1>
-            <div style={{ fontSize: 13, color: COR_SUTIL }}>
-              {templateInfo?.anoDeclaracao
-                ? `PGD ${templateInfo.anoDeclaracao} · ano-calendário ${templateInfo.anoCalendario} · gerando .DBK corrigido pro mesmo exercício`
-                : "Suba o template do PGD pra começar · um cliente por vez"}
-            </div>
+            {templateInfo?.anoDeclaracao && (
+              <div style={{ fontSize: 13, color: COR_SUTIL }}>
+                PGD {templateInfo.anoDeclaracao} · ano-calendário {templateInfo.anoCalendario} · gerando .DBK corrigido pro mesmo exercício
+              </div>
+            )}
           </div>
           <button
             onClick={() => setShowAjuda(true)}
@@ -6143,24 +6594,22 @@ function EstudioIRPFInner() {
       <main style={{ maxWidth: 1100, margin: "0 auto", padding: "32px 40px" }}>
 
         {/* SEÇÃO 1 — UPLOADS */}
-        <section style={{ marginBottom: 32 }}>
-          <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 22, margin: "0 0 6px" }}>
-            1 · Arquivos
+        <section style={{ marginBottom: 40 }}>
+          <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 30, letterSpacing: -0.6, margin: "0 0 10px" }}>
+            <span style={{ color: COR_SUTIL, fontWeight: 400, marginRight: 6 }}>01</span>
+            Arquivos
           </h2>
           <div style={{ fontSize: 12, color: COR_SUTIL, marginBottom: 16 }}>
             Para gerar <strong>.DBK</strong>, anexe o template (backup .DBK do PGD). Sem template, o estúdio gera apenas <strong>PDF</strong> de consolidação a partir do que tiver. Os <strong>informes do cliente</strong> (bancos, empregadores, corretoras) são anexados depois, diretamente no chat da IA.
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-            <FileSlot rotulo="Template .DBK" descricao="Backup .DBK do PGD do ano anterior (geralmente o arquivo da pré-preenchida). Obrigatório pra gerar .DBK atualizado."
+            <FileSlot rotulo="Template .DBK"
               accept=".dbk" file={template} onChange={setTemplate} />
-            <FileSlot rotulo="Declaração anterior (PDF)" descricao="Útil quando o template não tem todos os dados. Texto extraído localmente e embutido no prompt — não precisa anexar no chat da IA."
+            <FileSlot rotulo="Declaração anterior (PDF)"
               accept=".pdf" file={declAnterior} onChange={setDeclAnterior} protegido={declAnterior && arquivosProtegidos.includes(declAnterior.name)} />
-            <FileSlot rotulo="Recibo" descricao=".REC (parse local extrai nº do recibo) ou .PDF (texto extraído e embutido no prompt). Útil pra retificadora."
+            <FileSlot rotulo="Recibo"
               accept=".rec,.pdf" file={recibo} onChange={setRecibo} protegido={recibo && arquivosProtegidos.includes(recibo.name)} />
-            <FileSlot rotulo="Formulário complementar preenchido" descricao="PDF do formulário gerado abaixo, preenchido à mão pelo cliente. Anexe no chat da IA — tem prioridade sobre os informes."
-              accept=".pdf" file={formularioPreenchido} onChange={setFormularioPreenchido}
-              protegido={formularioPreenchido && arquivosProtegidos.includes(formularioPreenchido.name)} />
           </div>
 
           {(extraindo.decl || extraindo.recibo) && (
@@ -6224,13 +6673,12 @@ function EstudioIRPFInner() {
                 </div>
               </div>
               <div style={{ marginTop: 6, fontSize: 11, color: COR_SUTIL }}>
-                Use o formulário em PDF quando faltar algum informe. Imprima, peça pro cliente preencher à mão, escaneie e re-anexe no slot "Formulário complementar preenchido".
+                Use o formulário em PDF quando faltar algum informe. Imprima, peça pro cliente preencher à mão, escaneie e anexe no chat da IA com prioridade sobre os informes.
               </div>
             </div>
           )}
 
-          {/* Conteúdo detalhado do template — com semáforo de cores quando há patch */}
-          {templateInfo && <ConteudoTemplate templateInfo={templateInfo} patch={patch} aprovacoes={aprovacoes} setAprovacoes={setAprovacoes} manualOverrides={manualOverrides} setManualOverrides={setManualOverrides} />}
+          {/* Conteúdo detalhado do template — agora aparece DEPOIS da seção 02 Ações */}
 
           {templateErro && (
             <div style={{ marginTop: 14, padding: "10px 14px", background: "#fbeae6", border: `1px solid ${COR_VERMELHO}`, fontSize: 12, color: COR_VERMELHO }}>
@@ -6259,635 +6707,181 @@ function EstudioIRPFInner() {
             </div>
           )}
 
-          {/* Botão processar */}
-          <div style={{ marginTop: 20, display: "flex", gap: 12, alignItems: "center" }}>
-            {(() => {
-              const temPDFs = declAnterior || (recibo?.name.toLowerCase().endsWith(".pdf")) || formularioPreenchido;
-              const podeProcessar = (template && templateInfo) || temPDFs;
-              const labelBotao = processing
-                ? "Processando..."
-                : (template && templateInfo)
-                ? "Processar e gerar patch"
-                : temPDFs
-                ? "Processar e gerar PDF"
-                : "Anexe template ou PDFs";
-              return (
-                <button onClick={processar} disabled={processing || !podeProcessar}
-                  style={{ background: processing || !podeProcessar ? COR_SUTIL : COR_TINTA, color: COR_PAPEL, border: "none",
-                    padding: "12px 28px", fontSize: 13, letterSpacing: 0.5, textTransform: "uppercase",
-                    cursor: processing || !podeProcessar ? "not-allowed" : "pointer", fontWeight: 500 }}>
-                  {labelBotao}
-                </button>
-              );
-            })()}
-            {(patch || dadosExtraidos) && !processing && (
-              <button onClick={() => { setPatch(null); setDadosExtraidos(null); setAprovacoes({}); setRawResponse(null); }}
-                style={{ background: "transparent", color: COR_SUTIL, border: `1px solid ${COR_BORDA}`,
-                  padding: "12px 20px", fontSize: 12, letterSpacing: 0.5, textTransform: "uppercase", cursor: "pointer" }}>
-                Limpar resultado
-              </button>
-            )}
-            {statusMsg && <span style={{ color: COR_SUTIL, fontSize: 12, fontStyle: "italic" }}>{statusMsg}</span>}
-          </div>
-
-          {/* Erro */}
-          {error && (
-            <div style={{ marginTop: 16, padding: 14, background: "#fbeae6", border: `1px solid ${COR_VERMELHO}` }}>
-              <div style={{ fontSize: 12, color: COR_VERMELHO, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Erro</div>
-              <div style={{ fontSize: 13, fontFamily: "'IBM Plex Mono', monospace", color: COR_TINTA, wordBreak: "break-word" }}>{error}</div>
-              <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                {errorContext?.protegido && (
-                  <button onClick={() => removerProtegido(errorContext.protegido)}
-                    style={{ background: COR_AMBAR, color: "#fff", border: "none", padding: "6px 14px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer" }}>
-                    Remover "{errorContext.protegido}"
-                  </button>
-                )}
-                <button onClick={processar}
-                  style={{ background: COR_VERMELHO, color: "#fff", border: "none", padding: "6px 14px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer" }}>
-                  Tentar novamente
-                </button>
-                {rawResponse && (
-                  <details style={{ fontSize: 11, color: COR_SUTIL }}>
-                    <summary style={{ cursor: "pointer" }}>Ver resposta crua da API</summary>
-                    <pre style={{ marginTop: 6, padding: 8, background: "#fcfaf4", border: `1px solid ${COR_BORDA}`, maxHeight: 300, overflow: "auto", fontSize: 10 }}>{rawResponse}</pre>
-                  </details>
-                )}
-              </div>
-            </div>
-          )}
         </section>
 
-        {/* SEÇÃO 2 — REVISÃO DAS MUDANÇAS PROPOSTAS */}
-        {patch && templateInfo && (
-          <section style={{ marginBottom: 32 }}>
-            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 22, margin: "0 0 6px" }}>
-              2 · Mudanças propostas
+        {/* SEÇÃO 2 — AÇÕES (processar + downloads consolidados em uma única barra) */}
+        {templateInfo && (
+          <section style={{ marginBottom: 40, paddingTop: 8, borderTop: `1px solid ${COR_BORDA}` }}>
+            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 30, letterSpacing: -0.6, margin: "24px 0 10px" }}>
+              <span style={{ color: COR_SUTIL, fontWeight: 400, marginRight: 6 }}>02</span>
+              Ações
             </h2>
-            <div style={{ fontSize: 12, color: COR_SUTIL, marginBottom: 20 }}>
-              Cada linha abaixo é uma alteração que será aplicada ao arquivo. Desmarque o que não quer aplicar.
-              {" "}<strong>{contarAprovadas()}</strong> de {Object.keys(aprovacoes).length} aprovada(s).
+            <div style={{ fontSize: 12, color: COR_SUTIL, marginBottom: 14 }}>
+              {patch
+                ? <>Aplica as <strong>{contarAprovadas()}</strong> alteração(ões) aprovadas e gera os arquivos finais.</>
+                : "A IA vai analisar os arquivos anexados e propor as alterações no template."}
             </div>
 
-            {/* Contribuinte */}
-            {(patch.contribuinte || patch.endereco) && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.alterado.borda}`, background: STATUS_CONFIG.alterado.bg }}>
-                <Checkbox
-                  checked={aprovacoes["contrib"] !== false}
-                  onChange={(v) => setAprovacoes({ ...aprovacoes, contrib: v })}
-                  label="Contribuinte / Endereço"
-                  sub={`${Object.keys(patch.contribuinte || {}).length + Object.keys(patch.endereco || {}).length} campo(s)`}
-                />
-                <table style={{ width: "100%", marginTop: 8, fontSize: 12, borderCollapse: "collapse" }}>
-                  <tbody>
-                    {patch.contribuinte && Object.entries(patch.contribuinte).map(([k, v]) => (
-                      <tr key={k}><td style={{ color: COR_SUTIL, padding: "3px 0", width: "20%" }}>{k}</td>
-                        <td><Diff ant={templateInfo.contribuinte?.[k]} novo={v} /></td></tr>
-                    ))}
-                    {patch.endereco && Object.entries(patch.endereco).map(([k, v]) => (
-                      <tr key={k}><td style={{ color: COR_SUTIL, padding: "3px 0", width: "20%" }}>{k}</td>
-                        <td><Diff ant={templateInfo.endereco?.[k]} novo={v} /></td></tr>
-                    ))}
-                  </tbody>
-                </table>
+            {/* Botões principais lado a lado */}
+            <div style={{ display: "flex", gap: 12, alignItems: "stretch", flexWrap: "wrap", marginBottom: 12 }}>
+              {/* Processar — sempre disponível enquanto não há patch (ou pra reprocessar) */}
+              {(() => {
+                const temPDFs = declAnterior || (recibo?.name.toLowerCase().endsWith(".pdf")) || formularioPreenchido;
+                const podeProcessar = (template && templateInfo) || temPDFs;
+                const labelBotao = processing
+                  ? "Processando..."
+                  : (template && templateInfo) ? "Processar e gerar patch"
+                  : temPDFs ? "Processar e gerar PDF"
+                  : "Anexe template ou PDFs";
+                return (
+                  <button onClick={processar} disabled={processing || !podeProcessar}
+                    style={{
+                      background: processing || !podeProcessar ? "#c8c2b0" : COR_TINTA,
+                      color: COR_PAPEL, border: "none",
+                      padding: "18px 24px", fontSize: 13, letterSpacing: 0.5, textTransform: "uppercase",
+                      cursor: processing || !podeProcessar ? "not-allowed" : "pointer", fontWeight: 600,
+                      display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4,
+                      minWidth: 220, flex: "1 1 220px",
+                    }}>
+                    <span>{labelBotao}</span>
+                    <span style={{ fontSize: 10, fontWeight: 400, textTransform: "none", letterSpacing: 0, opacity: 0.85 }}>
+                      {(template && templateInfo) ? "IA propõe atualizações no template" : "IA extrai dados dos PDFs"}
+                    </span>
+                  </button>
+                );
+              })()}
+
+              {/* Baixar .DBK — só com patch */}
+              {patch && (
+                <button onClick={baixarDbk}
+                  style={{
+                    background: COR_VERDE, color: COR_PAPEL, border: "none",
+                    padding: "18px 24px", fontSize: 13, letterSpacing: 0.5, textTransform: "uppercase",
+                    cursor: "pointer", fontWeight: 600,
+                    display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4,
+                    minWidth: 220, flex: "1 1 220px",
+                  }}>
+                  <span>Baixar .DBK atualizado</span>
+                  <span style={{ fontSize: 10, fontWeight: 400, textTransform: "none", letterSpacing: 0, opacity: 0.85 }}>
+                    Importar no PGD {templateInfo.anoDeclaracao || ""} → Restaurar de cópia
+                  </span>
+                </button>
+              )}
+
+              {/* Baixar PDF de alterações — só com patch */}
+              {patch && (
+                <button onClick={baixarPdfDeclaracao}
+                  style={{
+                    background: "transparent", color: COR_TINTA, border: `1px solid ${COR_TINTA}`,
+                    padding: "18px 24px", fontSize: 13, letterSpacing: 0.5, textTransform: "uppercase",
+                    cursor: "pointer", fontWeight: 600,
+                    display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4,
+                    minWidth: 220, flex: "1 1 220px",
+                  }}>
+                  <span>Baixar PDF de alterações</span>
+                  <span style={{ fontSize: 10, fontWeight: 400, textTransform: "none", letterSpacing: 0, opacity: 0.85 }}>
+                    Resumo com diff antes/depois pra conferência
+                  </span>
+                </button>
+              )}
+            </div>
+
+            {/* Botões secundários: Limpar resultado / Diff HTML / Patch JSON */}
+            {(patch || dadosExtraidos) && !processing && (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
+                <button onClick={() => { setPatch(null); setDadosExtraidos(null); setAprovacoes({}); setRawResponse(null); }}
+                  style={{ background: "transparent", color: COR_SUTIL, border: `1px solid ${COR_BORDA}`, padding: "8px 14px", fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", cursor: "pointer" }}>
+                  Limpar resultado
+                </button>
+                {patch && (
+                  <>
+                    <button onClick={baixarRelatorio}
+                      style={{ background: "transparent", color: COR_SUTIL, border: `1px solid ${COR_BORDA}`, padding: "8px 14px", fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", cursor: "pointer" }}>
+                      Diff em HTML
+                    </button>
+                    <button onClick={baixarPatch}
+                      style={{ background: "transparent", color: COR_SUTIL, border: `1px solid ${COR_BORDA}`, padding: "8px 14px", fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", cursor: "pointer" }}>
+                      Patch JSON
+                    </button>
+                  </>
+                )}
+                {statusMsg && <span style={{ color: COR_SUTIL, fontSize: 12, fontStyle: "italic" }}>{statusMsg}</span>}
               </div>
             )}
 
-            {/* Fontes pagadoras */}
-            {(patch.fontes_pagadoras || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.alterado.borda}`, background: STATUS_CONFIG.alterado.bg }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: STATUS_CONFIG.alterado.borda, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Fontes pagadoras · {patch.fontes_pagadoras.length}
-                </h3>
-                {patch.fontes_pagadoras.map((f) => {
-                  const k = String(f.cnpj || "").replace(/\D/g, "").padStart(14, "0");
-                  const tpl = templateInfo.fontes.find((x) => x.cnpj === k);
-                  const labelTexto = f.resumo || `${fmtCNPJ(f.cnpj)} — ${tpl?.nome || f.nome || "(sem nome)"}`;
-                  const textoCopia = [
-                    `Fonte pagadora: ${tpl?.nome || f.nome || ""}`,
-                    `CNPJ: ${fmtCNPJ(f.cnpj)}`,
-                    `Rendimentos tributáveis: R$ ${fmtBRL(f.rendimentos_tributaveis)}`,
-                    f.decimo_terceiro ? `13º salário: R$ ${fmtBRL(f.decimo_terceiro)}` : "",
-                    `INSS: R$ ${fmtBRL(f.inss)}`,
-                    `IR retido: R$ ${fmtBRL(f.ir_retido)}`,
-                  ].filter(Boolean).join("\n");
-                  return (
-                    <div key={k} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <Checkbox
-                            checked={aprovacoes[`fonte_${k}`] !== false}
-                            onChange={(v) => setAprovacoes({ ...aprovacoes, [`fonte_${k}`]: v })}
-                            label={labelTexto}
-                            sub={f.origem}
-                          />
-                        </div>
-                        <BotaoCopiar texto={textoCopia} label="Copiar fonte completa" size={12} />
-                      </div>
-                      <table style={{ width: "100%", marginTop: 4, fontSize: 12, borderCollapse: "collapse" }}>
-                        <tbody>
-                          {["rendimentos_tributaveis", "decimo_terceiro", "inss", "ir_retido"].map((campo) => (
-                            f[campo] != null && (
-                              <tr key={campo}><td style={{ color: COR_SUTIL, padding: "2px 0", width: "30%" }}>{campo.replace("_", " ")}</td>
-                                <td style={{ display: "flex", alignItems: "center" }}>
-                                  <Diff ant={tpl?.[campo]} novo={f[campo]} valor />
-                                  <BotaoCopiar texto={fmtBRL(f[campo])} label={`Copiar ${campo}`} />
-                                </td></tr>
-                            )
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Bens */}
-            {(patch.bens_atualizados || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.alterado.borda}`, background: STATUS_CONFIG.alterado.bg }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: STATUS_CONFIG.alterado.borda, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Bens · saldo 31/12 · {patch.bens_atualizados.length}
-                </h3>
-                {patch.bens_atualizados.map((b) => {
-                  const tpl = templateInfo.bens[b.idx - 1];
-                  if (!tpl) return null;
-                  const anoCal = templateInfo.anoCalendario || "";
-                  const anoCalAnt = anoCal ? String(parseInt(anoCal, 10) - 1) : "";
-                  const labelTexto = b.resumo || `B${b.idx} [grupo ${tpl.grupo}] — ${(tpl.discriminacao || "").slice(0, 90)}${((tpl.discriminacao || "").length) > 90 ? "..." : ""}`;
-                  const linhasCopia = [
-                    `Bem B${b.idx} (grupo ${tpl.grupo}${tpl.codigo ? `/cód ${tpl.codigo}` : ""})`,
-                    `Discriminação: ${tpl.discriminacao}`,
-                  ];
-                  if (b.valor_anterior != null) {
-                    linhasCopia.push(`Valor 31/12/${anoCalAnt} (template): R$ ${fmtBRL(tpl.valor_anterior)}`);
-                    linhasCopia.push(`Valor 31/12/${anoCalAnt} (atualizado): R$ ${fmtBRL(b.valor_anterior)}`);
-                  }
-                  linhasCopia.push(`Valor 31/12/${anoCal} (template): R$ ${fmtBRL(tpl.valor_atual)}`);
-                  linhasCopia.push(`Valor 31/12/${anoCal} (atualizado): R$ ${fmtBRL(b.valor_atual)}`);
-                  const textoCopia = linhasCopia.join("\n");
-                  return (
-                    <div key={b.idx} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <Checkbox
-                            checked={aprovacoes[`bem_${b.idx}`] !== false}
-                            onChange={(v) => setAprovacoes({ ...aprovacoes, [`bem_${b.idx}`]: v })}
-                            label={labelTexto}
-                            sub={b.origem}
-                          />
-                        </div>
-                        <BotaoCopiar texto={textoCopia} label="Copiar bem completo" size={12} />
-                      </div>
-                      <div style={{ marginLeft: 26, marginTop: 4 }}>
-                        {b.valor_anterior != null && (
-                          <div style={{ display: "flex", alignItems: "center", marginBottom: 4 }}>
-                            <span style={{ fontSize: 11, color: COR_SUTIL, marginRight: 8, minWidth: 90 }}>31/12/{templateInfo.anoCalendario ? String(parseInt(templateInfo.anoCalendario, 10) - 1) : ""}</span>
-                            <Diff ant={tpl.valor_anterior} novo={b.valor_anterior} valor />
-                            <BotaoCopiar texto={fmtBRL(b.valor_anterior)} label="Copiar valor anterior atualizado" />
-                          </div>
-                        )}
-                        <div style={{ display: "flex", alignItems: "center" }}>
-                          <span style={{ fontSize: 11, color: COR_SUTIL, marginRight: 8, minWidth: 90 }}>31/12/{templateInfo.anoCalendario || ""}</span>
-                          <Diff ant={tpl.valor_atual} novo={b.valor_atual} valor />
-                          <BotaoCopiar texto={fmtBRL(b.valor_atual)} label="Copiar valor novo" />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Dívidas */}
-            {(patch.dividas_atualizadas || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.alterado.borda}`, background: STATUS_CONFIG.alterado.bg }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: STATUS_CONFIG.alterado.borda, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Dívidas · saldo 31/12 · {patch.dividas_atualizadas.length}
-                </h3>
-                {patch.dividas_atualizadas.map((d) => {
-                  const tpl = templateInfo.dividas[d.idx - 1];
-                  if (!tpl) return null;
-                  const anoCal = templateInfo.anoCalendario || "";
-                  const anoCalAnt = anoCal ? String(parseInt(anoCal, 10) - 1) : "";
-                  const labelTexto = d.resumo || `V${d.idx} — ${(tpl.discriminacao || "").slice(0, 90)}${((tpl.discriminacao || "").length) > 90 ? "..." : ""}`;
-                  const linhasCopia = [
-                    `Dívida V${d.idx} (código ${tpl.codigo})`,
-                    `Discriminação: ${tpl.discriminacao}`,
-                  ];
-                  if (d.valor_anterior != null) {
-                    linhasCopia.push(`Saldo 31/12/${anoCalAnt} (template): R$ ${fmtBRL(tpl.valor_anterior)}`);
-                    linhasCopia.push(`Saldo 31/12/${anoCalAnt} (atualizado): R$ ${fmtBRL(d.valor_anterior)}`);
-                  }
-                  linhasCopia.push(`Saldo 31/12/${anoCal} (template): R$ ${fmtBRL(tpl.valor_atual)}`);
-                  linhasCopia.push(`Saldo 31/12/${anoCal} (atualizado): R$ ${fmtBRL(d.valor_atual)}`);
-                  const textoCopia = linhasCopia.join("\n");
-                  return (
-                    <div key={d.idx} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <Checkbox
-                            checked={aprovacoes[`divida_${d.idx}`] !== false}
-                            onChange={(v) => setAprovacoes({ ...aprovacoes, [`divida_${d.idx}`]: v })}
-                            label={labelTexto}
-                            sub={d.origem}
-                          />
-                        </div>
-                        <BotaoCopiar texto={textoCopia} label="Copiar dívida completa" size={12} />
-                      </div>
-                      <div style={{ marginLeft: 26, marginTop: 4 }}>
-                        {d.valor_anterior != null && (
-                          <div style={{ display: "flex", alignItems: "center", marginBottom: 4 }}>
-                            <span style={{ fontSize: 11, color: COR_SUTIL, marginRight: 8, minWidth: 90 }}>31/12/{templateInfo.anoCalendario ? String(parseInt(templateInfo.anoCalendario, 10) - 1) : ""}</span>
-                            <Diff ant={tpl.valor_anterior} novo={d.valor_anterior} valor />
-                            <BotaoCopiar texto={fmtBRL(d.valor_anterior)} label="Copiar saldo anterior atualizado" />
-                          </div>
-                        )}
-                        <div style={{ display: "flex", alignItems: "center" }}>
-                          <span style={{ fontSize: 11, color: COR_SUTIL, marginRight: 8, minWidth: 90 }}>31/12/{templateInfo.anoCalendario || ""}</span>
-                          <Diff ant={tpl.valor_atual} novo={d.valor_atual} valor />
-                          <BotaoCopiar texto={fmtBRL(d.valor_atual)} label="Copiar valor novo" />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Dependentes */}
-            {(patch.dependentes_atualizados || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.alterado.borda}`, background: STATUS_CONFIG.alterado.bg }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: STATUS_CONFIG.alterado.borda, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Dependentes · {patch.dependentes_atualizados.length}
-                </h3>
-                {patch.dependentes_atualizados.map((d) => {
-                  const tpl = templateInfo.dependentes[d.idx - 1];
-                  if (!tpl) return null;
-                  return (
-                    <div key={d.idx} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <Checkbox
-                        checked={aprovacoes[`dep_${d.idx}`] !== false}
-                        onChange={(v) => setAprovacoes({ ...aprovacoes, [`dep_${d.idx}`]: v })}
-                        label={`D${d.idx} — ${tpl.nome}`}
-                      />
-                      <table style={{ width: "100%", marginTop: 4, marginLeft: 26, fontSize: 12, borderCollapse: "collapse" }}>
-                        <tbody>
-                          {Object.entries(d).filter(([k]) => k !== "idx").map(([k, v]) => (
-                            <tr key={k}><td style={{ color: COR_SUTIL, padding: "2px 0", width: "30%" }}>{k}</td>
-                              <td><Diff ant={tpl[k]} novo={v} /></td></tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Rendimentos isentos */}
-            {(patch.rendimentos_isentos_atualizados || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.alterado.borda}`, background: STATUS_CONFIG.alterado.bg }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: STATUS_CONFIG.alterado.borda, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Rendimentos isentos · {patch.rendimentos_isentos_atualizados.length}
-                </h3>
-                {patch.rendimentos_isentos_atualizados.map((r) => {
-                  const tpl = templateInfo.rendIsentos[r.idx - 1];
-                  if (!tpl) return null;
-                  return (
-                    <div key={r.idx} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <Checkbox
-                        checked={aprovacoes[`isento_${r.idx}`] !== false}
-                        onChange={(v) => setAprovacoes({ ...aprovacoes, [`isento_${r.idx}`]: v })}
-                        label={`I${r.idx} — ${tpl.nome_fonte || ""} · ${(tpl.descricao || "").slice(0, 60)}`}
-                        sub={r.origem}
-                      />
-                      <div style={{ marginLeft: 26, marginTop: 4 }}>
-                        <Diff ant={tpl.valor} novo={r.valor} valor />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Pagamentos efetuados atualizados (alterado) */}
-            {(patch.pagamentos_atualizados || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.alterado.borda}`, background: STATUS_CONFIG.alterado.bg }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: STATUS_CONFIG.alterado.borda, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Pagamentos efetuados · {patch.pagamentos_atualizados.length}
-                </h3>
-                {patch.pagamentos_atualizados.map((p) => {
-                  const tpl = templateInfo.pagamentos[p.idx - 1];
-                  if (!tpl) return null;
-                  const textoCopia = [
-                    `Pagamento P${p.idx} (código ${tpl.codigo})`,
-                    `Beneficiário: ${tpl.nome}`,
-                    `CNPJ/CPF: ${tpl.cnpj_cpf}`,
-                    `Valor pago (template): R$ ${fmtBRL(tpl.valor_pago)}`,
-                    `Valor pago (atualizado): R$ ${fmtBRL(p.valor_pago)}`,
-                  ].join("\n");
-                  return (
-                    <div key={p.idx} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
-                        <div style={{ flex: 1 }}>
-                          <Checkbox
-                            checked={aprovacoes[`pag_${p.idx}`] !== false}
-                            onChange={(v) => setAprovacoes({ ...aprovacoes, [`pag_${p.idx}`]: v })}
-                            label={`P${p.idx} — [cód ${tpl.codigo}] ${(tpl.nome || "").slice(0, 70)}`}
-                            sub={p.origem}
-                          />
-                        </div>
-                        <BotaoCopiar texto={textoCopia} label="Copiar pagamento completo" size={12} />
-                      </div>
-                      <div style={{ marginLeft: 26, marginTop: 4, display: "flex", alignItems: "center" }}>
-                        <Diff ant={tpl.valor_pago} novo={p.valor_pago} valor />
-                        <BotaoCopiar texto={fmtBRL(p.valor_pago)} label="Copiar valor novo" />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Pagamentos a remover (laranja) */}
-            {(patch.pagamentos_a_remover || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.remover.borda}`, background: STATUS_CONFIG.remover.bg }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: STATUS_CONFIG.remover.borda, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Pagamentos a remover · {patch.pagamentos_a_remover.length}
-                </h3>
-                <div style={{ fontSize: 11, color: COR_SUTIL, marginBottom: 8 }}>
-                  Pagamentos com R$ 0,00 ou sem recorrência em {templateInfo.anoCalendario || "ano atual"}. Desmarque pra manter no .DBK.
+            {/* Erro */}
+            {error && (
+              <div style={{ padding: 14, background: "#fbeae6", border: `1px solid ${COR_VERMELHO}`, marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: COR_VERMELHO, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Erro</div>
+                <div style={{ fontSize: 13, fontFamily: "'IBM Plex Mono', monospace", color: COR_TINTA, wordBreak: "break-word" }}>{error}</div>
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {errorContext?.protegido && (
+                    <button onClick={() => removerProtegido(errorContext.protegido)}
+                      style={{ background: COR_AMBAR, color: "#fff", border: "none", padding: "6px 14px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer" }}>
+                      Remover "{errorContext.protegido}"
+                    </button>
+                  )}
+                  <button onClick={processar}
+                    style={{ background: COR_VERMELHO, color: "#fff", border: "none", padding: "6px 14px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer" }}>
+                    Tentar novamente
+                  </button>
+                  {rawResponse && (
+                    <details style={{ fontSize: 11, color: COR_SUTIL }}>
+                      <summary style={{ cursor: "pointer" }}>Ver resposta crua da API</summary>
+                      <pre style={{ marginTop: 6, padding: 8, background: "#fcfaf4", border: `1px solid ${COR_BORDA}`, maxHeight: 300, overflow: "auto", fontSize: 10 }}>{rawResponse}</pre>
+                    </details>
+                  )}
                 </div>
-                {patch.pagamentos_a_remover.map((p) => {
-                  const tpl = templateInfo.pagamentos[p.idx - 1];
-                  if (!tpl) return null;
-                  return (
-                    <div key={p.idx} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <Checkbox
-                        checked={aprovacoes[`pag_remover_${p.idx}`] !== false}
-                        onChange={(v) => setAprovacoes({ ...aprovacoes, [`pag_remover_${p.idx}`]: v })}
-                        label={`P${p.idx} — [cód ${tpl.codigo}] ${(tpl.nome || "").slice(0, 70)}`}
-                        sub={p.motivo || "valor R$ 0,00"}
-                      />
-                    </div>
-                  );
-                })}
               </div>
             )}
 
-            {/* Rendimentos exclusivos atualizados (alterado / azul) */}
-            {(patch.rendimentos_exclusivos_atualizados || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.alterado.borda}`, background: STATUS_CONFIG.alterado.bg }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: STATUS_CONFIG.alterado.borda, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Rendimentos exclusivos · {patch.rendimentos_exclusivos_atualizados.length}
-                </h3>
-                {patch.rendimentos_exclusivos_atualizados.map((e) => {
-                  const tpl = templateInfo.rendExclusivos[e.idx - 1];
-                  if (!tpl) return null;
-                  return (
-                    <div key={e.idx} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <Checkbox
-                        checked={aprovacoes[`excl_${e.idx}`] !== false}
-                        onChange={(v) => setAprovacoes({ ...aprovacoes, [`excl_${e.idx}`]: v })}
-                        label={`E${e.idx} — [cód ${tpl.codigo}] ${(tpl.nome_fonte || "").slice(0, 65)}`}
-                        sub={e.origem}
-                      />
-                      <div style={{ marginLeft: 26, marginTop: 4, display: "flex", alignItems: "center" }}>
-                        <Diff ant={tpl.valor} novo={e.valor} valor />
-                        <BotaoCopiar texto={fmtBRL(e.valor)} label="Copiar valor novo" />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Rendimentos exclusivos a remover (laranja) */}
-            {(patch.rendimentos_exclusivos_a_remover || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${STATUS_CONFIG.remover.borda}`, background: STATUS_CONFIG.remover.bg }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: STATUS_CONFIG.remover.borda, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Rendimentos exclusivos a remover · {patch.rendimentos_exclusivos_a_remover.length}
-                </h3>
-                {patch.rendimentos_exclusivos_a_remover.map((e) => {
-                  const tpl = templateInfo.rendExclusivos[e.idx - 1];
-                  if (!tpl) return null;
-                  return (
-                    <div key={e.idx} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <Checkbox
-                        checked={aprovacoes[`excl_remover_${e.idx}`] !== false}
-                        onChange={(v) => setAprovacoes({ ...aprovacoes, [`excl_remover_${e.idx}`]: v })}
-                        label={`E${e.idx} — [cód ${tpl.codigo}] ${(tpl.nome_fonte || "").slice(0, 65)}`}
-                        sub={e.motivo}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Itens novos — gravados automaticamente no .DBK (PJ + bens + dívidas) */}
-            {(patch.fontes_novas?.length > 0 || patch.bens_novos_aviso?.length > 0 || patch.dividas_novas_aviso?.length > 0 || patch.pagamentos_novos_aviso?.length > 0 || patch.rendimentos_exclusivos_novos_aviso?.length > 0) && (
-              <div style={{ marginBottom: 16, padding: 16, background: "#eef4ef", borderLeft: `3px solid ${COR_VERDE}` }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 4px", color: COR_VERDE, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Itens novos · serão gravados no .DBK
-                </h3>
-                <div style={{ fontSize: 11, color: COR_SUTIL, marginBottom: 10 }}>
-                  O estúdio constrói as linhas de registro novas e atualiza o footer T9 automaticamente. Desmarque pra excluir do .DBK.
-                </div>
-
-                {(patch.fontes_novas || []).length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, color: COR_VERDE, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6, fontWeight: 500 }}>
-                      Fontes pagadoras PJ novas · {patch.fontes_novas.length}
-                    </div>
-                    {(patch.fontes_novas || []).map((f, i) => (
-                      <div key={`fn${i}`} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 6, marginTop: 6 }}>
-                        <Checkbox
-                          checked={aprovacoes[`fonte_nova_${i}`] !== false}
-                          onChange={(v) => setAprovacoes({ ...aprovacoes, [`fonte_nova_${i}`]: v })}
-                          label={f.resumo || `${fmtCNPJ(f.cnpj)} — ${f.nome || ""}`}
-                          sub={f.origem}
-                        />
-                        <div style={{ marginLeft: 26, marginTop: 4 }}>
-                          <AvisoCard item={f} prefixo="Fonte" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {(patch.bens_novos_aviso || []).length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, color: COR_VERDE, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6, fontWeight: 500 }}>
-                      Bens novos · {patch.bens_novos_aviso.length}
-                    </div>
-                    {(patch.bens_novos_aviso || []).map((b, i) => (
-                      <div key={`bn${i}`} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 6, marginTop: 6 }}>
-                        <Checkbox
-                          checked={aprovacoes[`bem_novo_${i}`] !== false}
-                          onChange={(v) => setAprovacoes({ ...aprovacoes, [`bem_novo_${i}`]: v })}
-                          label={(typeof b === "string" ? b : (b.resumo || b.discriminacao || "")).slice(0, 100)}
-                          sub={typeof b === "object" ? b.origem : undefined}
-                        />
-                        <div style={{ marginLeft: 26, marginTop: 4 }}>
-                          <AvisoCard item={b} prefixo="Bem" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {(patch.dividas_novas_aviso || []).length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, color: COR_VERDE, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6, fontWeight: 500 }}>
-                      Dívidas novas · {patch.dividas_novas_aviso.length}
-                    </div>
-                    {(patch.dividas_novas_aviso || []).map((d, i) => (
-                      <div key={`vn${i}`} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 6, marginTop: 6 }}>
-                        <Checkbox
-                          checked={aprovacoes[`divida_nova_${i}`] !== false}
-                          onChange={(v) => setAprovacoes({ ...aprovacoes, [`divida_nova_${i}`]: v })}
-                          label={(typeof d === "string" ? d : (d.resumo || d.discriminacao || "")).slice(0, 100)}
-                          sub={typeof d === "object" ? d.origem : undefined}
-                        />
-                        <div style={{ marginLeft: 26, marginTop: 4 }}>
-                          <AvisoCard item={d} prefixo="Dívida" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {(patch.pagamentos_novos_aviso || []).length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, color: COR_VERDE, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6, fontWeight: 500 }}>
-                      Pagamentos efetuados novos · {patch.pagamentos_novos_aviso.length}
-                    </div>
-                    {(patch.pagamentos_novos_aviso || []).map((p, i) => (
-                      <div key={`pn${i}`} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 6, marginTop: 6 }}>
-                        <Checkbox
-                          checked={aprovacoes[`pag_novo_${i}`] !== false}
-                          onChange={(v) => setAprovacoes({ ...aprovacoes, [`pag_novo_${i}`]: v })}
-                          label={(typeof p === "string" ? p : (p.resumo || p.nome || `Cód ${p.codigo}`)).slice(0, 100)}
-                          sub={typeof p === "object" ? p.origem : undefined}
-                        />
-                        <div style={{ marginLeft: 26, marginTop: 4 }}>
-                          <AvisoCard item={p} prefixo="Pagamento" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {(patch.rendimentos_exclusivos_novos_aviso || []).length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, color: COR_VERDE, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6, fontWeight: 500 }}>
-                      Rendimentos exclusivos novos · {patch.rendimentos_exclusivos_novos_aviso.length}
-                    </div>
-                    {(patch.rendimentos_exclusivos_novos_aviso || []).map((e, i) => (
-                      <div key={`ren${i}`} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 6, marginTop: 6 }}>
-                        <Checkbox
-                          checked={aprovacoes[`excl_novo_${i}`] !== false}
-                          onChange={(v) => setAprovacoes({ ...aprovacoes, [`excl_novo_${i}`]: v })}
-                          label={(typeof e === "string" ? e : (e.resumo || e.nome_fonte || `Cód ${e.codigo}`)).slice(0, 100)}
-                          sub={typeof e === "object" ? e.origem : undefined}
-                        />
-                        <div style={{ marginLeft: 26, marginTop: 4 }}>
-                          <AvisoCard item={e} prefixo="Rendimento exclusivo" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Rendimentos PF (Carnê-Leão) — gravados no .DBK como reg 22 + reg 49 */}
-            {(patch.rendimentos_pf_carne_leao || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, background: "#eef4ef", borderLeft: `3px solid ${COR_VERDE}` }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 4px", color: COR_VERDE, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Rendimentos de PF (Carnê-Leão) · {patch.rendimentos_pf_carne_leao.length} · serão gravados no .DBK
-                </h3>
-                <div style={{ fontSize: 11, color: COR_SUTIL, marginBottom: 10 }}>
-                  Pagadores pessoa física (CPF). O estúdio grava o consolidado mensal (reg 22) e cada lançamento individual (reg 49) na ficha &quot;Rendimentos Tributáveis Recebidos de PF/Exterior&quot;.
-                  <strong> Se o template já tiver Carnê-Leão lançado manualmente, os lançamentos antigos são SUBSTITUÍDOS</strong> pelos novos — não some dois preenchimentos no mesmo .DBK.
-                  Atenção: a <em>natureza</em> do rendimento (honorários, aluguéis, etc.) ainda não é gravada — o PGD vai assumir o default; revise depois de restaurar.
-                </div>
-                {(patch.rendimentos_pf_carne_leao || []).map((p, i) => {
-                  const anoCalLabel = templateInfo.anoCalendario || "";
-                  const textoCopia = [
-                    `Pagador (PF): ${p.nome || ""}`,
-                    `CPF: ${fmtCPF(p.cpf)}`,
-                    `Valor total no ano: R$ ${fmtBRL(p.valor_total_ano)}`,
-                    p.natureza ? `Natureza: ${p.natureza}` : "",
-                    p.valores_mensais ? `Mensal: ${Object.entries(p.valores_mensais).filter(([_, v]) => Number(v) > 0).map(([m, v]) => `${m.padStart(2, "0")}${anoCalLabel ? "/" + anoCalLabel : ""} R$ ${fmtBRL(v)}`).join(", ")}` : "",
-                  ].filter(Boolean).join("\n");
-                  return (
-                    <div key={`pf${i}`} style={{ borderTop: `1px dashed ${COR_BORDA}`, paddingTop: 8, marginTop: 8 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <Checkbox
-                            checked={aprovacoes[`pf_${i}`] !== false}
-                            onChange={(v) => setAprovacoes({ ...aprovacoes, [`pf_${i}`]: v })}
-                            label={p.resumo || `${p.nome || ""} · CPF ${fmtCPF(p.cpf)}`}
-                            sub={p.origem}
-                          />
-                        </div>
-                        <BotaoCopiar texto={textoCopia} label="Copiar dados pra lançar no PGD" size={12} />
-                      </div>
-                      <div style={{ marginLeft: 26, marginTop: 4, fontSize: 12, color: COR_TINTA, fontFamily: "'IBM Plex Mono', monospace" }}>
-                        Total ano: <strong>R$ {fmtBRL(p.valor_total_ano)}</strong>
-                        {p.natureza ? ` · ${p.natureza}` : ""}
-                      </div>
-                      {p.valores_mensais && Object.values(p.valores_mensais).some((v) => Number(v) > 0) && (
-                        <div style={{ marginLeft: 26, marginTop: 4, fontSize: 11, color: COR_SUTIL, fontFamily: "'IBM Plex Mono', monospace" }}>
-                          {Object.entries(p.valores_mensais).filter(([_, v]) => Number(v) > 0).map(([m, v]) => `${m.padStart(2, "0")}: R$ ${fmtBRL(v)}`).join(" · ")}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Dependentes novos — ainda manual (sem reg 25 INSERT por enquanto) */}
-            {(patch.dependentes_novos_aviso || []).length > 0 && (
-              <div style={{ marginBottom: 16, padding: 16, background: "#fdf4e0", borderLeft: `3px solid ${COR_AMBAR}` }}>
-                <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 15, margin: "0 0 10px", color: "#8a6a14", textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Dependentes novos · adicionar manualmente no PGD
-                </h3>
-                {(patch.dependentes_novos_aviso || []).map((dep, i) => (
-                  <AvisoCard key={`dn${i}`} item={dep} prefixo="Dependente" />
-                ))}
-              </div>
-            )}
-
-            {patch.observacoes && (
-              <div style={{ marginBottom: 16, padding: 12, background: "#fcfaf4", border: `1px solid ${COR_BORDA}`, fontSize: 12, color: COR_SUTIL, fontStyle: "italic" }}>
-                <strong style={{ fontStyle: "normal", color: COR_TINTA }}>Observações da IA:</strong> {patch.observacoes}
-              </div>
-            )}
-
-            {/* Caso de patch totalmente vazio */}
-            {!patch.contribuinte && !patch.endereco
-              && !(patch.fontes_pagadoras?.length) && !(patch.fontes_novas?.length)
-              && !(patch.rendimentos_pf_carne_leao?.length)
-              && !(patch.bens_atualizados?.length) && !(patch.bens_novos_aviso?.length) && !(patch.bens_a_remover?.length)
-              && !(patch.dividas_atualizadas?.length) && !(patch.dividas_novas_aviso?.length) && !(patch.dividas_a_remover?.length)
-              && !(patch.dependentes_atualizados?.length) && !(patch.dependentes_novos_aviso?.length) && !(patch.dependentes_a_remover?.length)
-              && !(patch.rendimentos_isentos_atualizados?.length) && (
-              <div style={{ padding: 16, border: `1px solid ${COR_BORDA}`, background: "#fcfaf4", fontSize: 13, color: COR_SUTIL, textAlign: "center" }}>
-                Nenhuma alteração proposta. Provavelmente faltam informes do ano atual — anexe-os e processe novamente.
+            {/* Aviso compatibilidade — só quando há patch */}
+            {patch && (
+              <div style={{ padding: 12, background: "#fdf4e0", borderLeft: `3px solid ${COR_AMBAR}`, fontSize: 11, color: "#6b6256", lineHeight: 1.6 }}>
+                <strong style={{ color: "#8a6a14" }}>Compatibilidade de versão:</strong> o .DBK gerado tem a mesma estrutura interna do template ({templateInfo.anoDeclaracao ? `PGD ${templateInfo.anoDeclaracao}, ano-cal ${templateInfo.anoCalendario}` : "versão detectada"}). Ele só pode ser restaurado no <strong>PGD da mesma versão</strong>.
               </div>
             )}
           </section>
         )}
 
+        {/* Conteúdo detalhado do template — com semáforo de cores quando há patch */}
+        {templateInfo && (
+          <section style={{ marginBottom: 40 }}>
+            <ConteudoTemplate templateInfo={templateInfo} patch={patch} aprovacoes={aprovacoes} setAprovacoes={setAprovacoes} manualOverrides={manualOverrides} setManualOverrides={setManualOverrides} />
+          </section>
+        )}
+
+        {/* Observações da IA — apresentadas como lista quando há múltiplas linhas */}
+        {patch && templateInfo && patch.observacoes && (
+          <section style={{ marginBottom: 40, paddingTop: 8, borderTop: `1px solid ${COR_BORDA}` }}>
+            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 30, letterSpacing: -0.6, margin: "24px 0 14px" }}>
+              Observações da IA
+            </h2>
+            <ListaObservacoes texto={patch.observacoes} />
+          </section>
+        )}
+
+        {/* Caso de patch totalmente vazio — alertar o contador que provavelmente faltam informes */}
+        {patch && templateInfo
+          && !patch.contribuinte && !patch.endereco
+          && !(patch.fontes_pagadoras?.length) && !(patch.fontes_novas?.length)
+          && !(patch.rendimentos_pf_carne_leao?.length)
+          && !(patch.bens_atualizados?.length) && !(patch.bens_novos_aviso?.length) && !(patch.bens_a_remover?.length)
+          && !(patch.dividas_atualizadas?.length) && !(patch.dividas_novas_aviso?.length) && !(patch.dividas_a_remover?.length)
+          && !(patch.dependentes_atualizados?.length) && !(patch.dependentes_novos_aviso?.length) && !(patch.dependentes_a_remover?.length)
+          && !(patch.rendimentos_isentos_atualizados?.length)
+          && !patch.observacoes && (
+          <section style={{ marginBottom: 32, padding: 18, border: `1px solid ${COR_BORDA}`, background: "#fcfaf4", fontSize: 13, color: COR_SUTIL, textAlign: "center" }}>
+            Nenhuma alteração proposta. Provavelmente faltam informes do ano atual — anexe-os e processe novamente.
+          </section>
+        )}
+
         {/* SEÇÃO 2 ALTERNATIVA — DADOS CONSOLIDADOS (modo sem template) */}
         {dadosExtraidos && !templateInfo && (
-          <section style={{ marginBottom: 32 }}>
-            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 22, margin: "0 0 6px" }}>
-              2 · Dados consolidados
+          <section style={{ marginBottom: 40, paddingTop: 8, borderTop: `1px solid ${COR_BORDA}` }}>
+            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 30, letterSpacing: -0.6, margin: "24px 0 10px" }}>
+              <span style={{ color: COR_SUTIL, fontWeight: 400, marginRight: 6 }}>02</span>
+              Dados consolidados
             </h2>
             <div style={{ fontSize: 12, color: COR_SUTIL, marginBottom: 20 }}>
               Modo sem template: os dados abaixo foram extraídos dos PDFs. Use o PDF de consolidação como referência pra preencher manualmente no PGD.
@@ -7048,70 +7042,12 @@ function EstudioIRPFInner() {
           </section>
         )}
 
-        {/* SEÇÃO 3 — DOWNLOADS */}
-        {patch && templateInfo && (
-          <section>
-            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 22, margin: "0 0 6px" }}>
-              3 · Gerar arquivos
-            </h2>
-            <div style={{ fontSize: 12, color: COR_SUTIL, marginBottom: 16 }}>
-              Aplica as <strong>{contarAprovadas()}</strong> alteração(ões) aprovadas e gera os arquivos finais.
-            </div>
-
-            {/* Dois botões principais lado a lado */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-              <button onClick={baixarDbk} disabled={!patch}
-                style={{ background: !patch ? "#c8c2b0" : COR_VERDE, color: COR_PAPEL, border: "none",
-                  padding: "18px 24px", fontSize: 13, letterSpacing: 0.5, textTransform: "uppercase",
-                  cursor: !patch ? "not-allowed" : "pointer", fontWeight: 600,
-                  display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4 }}>
-                <span>Baixar .DBK atualizado</span>
-                <span style={{ fontSize: 10, fontWeight: 400, textTransform: "none", letterSpacing: 0, opacity: 0.85 }}>
-                  Importar no PGD {templateInfo.anoDeclaracao || ""} → Restaurar de cópia
-                </span>
-              </button>
-              <button onClick={baixarPdfDeclaracao} disabled={!patch}
-                style={{ background: !patch ? "#c8c2b0" : COR_TINTA, color: COR_PAPEL, border: "none",
-                  padding: "18px 24px", fontSize: 13, letterSpacing: 0.5, textTransform: "uppercase",
-                  cursor: !patch ? "not-allowed" : "pointer", fontWeight: 600,
-                  display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4 }}>
-                <span>Baixar PDF de alterações</span>
-                <span style={{ fontSize: 10, fontWeight: 400, textTransform: "none", letterSpacing: 0, opacity: 0.85 }}>
-                  Resumo com diff antes/depois pra conferência ou arquivo
-                </span>
-              </button>
-            </div>
-
-            {/* Saídas secundárias */}
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-              <button onClick={baixarRelatorio}
-                style={{ background: "transparent", color: COR_SUTIL, border: `1px solid ${COR_BORDA}`, padding: "8px 14px", fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", cursor: "pointer" }}>
-                Diff em HTML
-              </button>
-              <button onClick={baixarPatch}
-                style={{ background: "transparent", color: COR_SUTIL, border: `1px solid ${COR_BORDA}`, padding: "8px 14px", fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", cursor: "pointer" }}>
-                Patch JSON
-              </button>
-            </div>
-
-            {/* Avisos */}
-            <div style={{ padding: 12, background: "#fdf4e0", borderLeft: `3px solid ${COR_AMBAR}`, fontSize: 11, color: "#6b6256", lineHeight: 1.6 }}>
-              <strong style={{ color: "#8a6a14" }}>Compatibilidade de versão:</strong> o .DBK gerado tem a mesma estrutura interna do template ({templateInfo.anoDeclaracao
-                ? `PGD ${templateInfo.anoDeclaracao}, ano-cal ${templateInfo.anoCalendario}`
-                : "versão detectada"}). Ele só pode ser restaurado no <strong>PGD da mesma versão</strong>. Pra migrar entre anos (ex: usar declaração 2025 no PGD 2026), abra o PGD 2026, vá em <em>"Importar declaração do ano anterior"</em>, salve a versão migrada, e use ESSE arquivo aqui como template.
-            </div>
-
-            <div style={{ marginTop: 10, fontSize: 11, color: COR_SUTIL, fontStyle: "italic", maxWidth: 760, lineHeight: 1.5 }}>
-              <strong>Limitações:</strong> o registro 20 (resumo financeiro) não é reescrito — o PGD recalcula ao restaurar. Bens fixos (imóveis, veículos, participações societárias) não são tocados. Itens novos precisam ser adicionados manualmente no PGD após restaurar.
-            </div>
-          </section>
-        )}
-
         {/* SEÇÃO 3 ALTERNATIVA — DOWNLOADS (modo sem template) */}
         {dadosExtraidos && !templateInfo && (
-          <section>
-            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 22, margin: "0 0 6px" }}>
-              3 · Gerar arquivos
+          <section style={{ paddingTop: 8, borderTop: `1px solid ${COR_BORDA}` }}>
+            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 30, letterSpacing: -0.6, margin: "24px 0 10px" }}>
+              <span style={{ color: COR_SUTIL, fontWeight: 400, marginRight: 6 }}>03</span>
+              Gerar arquivos
             </h2>
             <div style={{ fontSize: 12, color: COR_SUTIL, marginBottom: 16 }}>
               Modo sem template — não é possível gerar .DBK. Pra gerar .DBK, anexe um .DBK do PGD anterior e processe novamente.
@@ -7146,6 +7082,8 @@ function EstudioIRPFInner() {
           </section>
         )}
       </main>
+
+      <BotaoVoltarAoTopo />
     </div>
   );
 }

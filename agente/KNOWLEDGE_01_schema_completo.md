@@ -197,7 +197,7 @@ Códigos de grupo/código de bens estão em `KNOWLEDGE_02_codigos_pgd.md`.
 ```json
 { "resumo": "JOAO PEREIRA · filho", "idx": 1, "nome": "JOAO PEREIRA", "data_nascimento": "15032010", "cpf": "12345678900" }
 ```
-Códigos de tipo de dependente em `KNOWLEDGE_02_codigos_pgd.md`.
+Códigos de tipo de dependente em `KNOWLEDGE_06D_dependentes.md` (Manual IRPF 2026 p. 359).
 
 ### `rendimentos_isentos_atualizados` (reg 86 do .DBK)
 

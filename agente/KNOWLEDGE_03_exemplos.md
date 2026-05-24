@@ -173,7 +173,7 @@ Estes exemplos mostram como traduzir documentos reais em entries do patch JSON. 
   "pagamentos_novos_aviso": [
     {
       "resumo": "Honorários advocatícios · Dr. Antonio Santos",
-      "codigo": "70",
+      "codigo": "61",
       "cnpj_cpf": "98765432101",
       "nome": "ANTONIO SANTOS ADVOGADO",
       "valor_pago": 5000.00,
@@ -185,7 +185,11 @@ Estes exemplos mostram como traduzir documentos reais em entries do patch JSON. 
 
 **Atenção:**
 - Receita de processo: depende da natureza. Se for indenização trabalhista/cível → isentos. Se for verba salarial atrasada (RRA) → pode ir em fonte tributável com tratamento especial. Quando estiver em dúvida, mencione em `observacoes` que o tratamento depende da natureza do crédito recebido.
-- Honorários do advogado → **código 70**. CPF se PF, CNPJ se escritório LTDA.
+- Honorários do advogado: o código depende do tipo da ação (Manual IRPF 2026 p. 363):
+  - **60** — ação judicial NÃO-trabalhista (cível, família, tributária, previdenciária, sucessões)
+  - **61** — ação judicial trabalhista (caso típico de RRA por verba salarial atrasada — usado neste exemplo)
+  - **62** — demais honorários (consultivos, administrativos, fora de ação judicial)
+  - **NÃO usar** código 70 — esse é Aluguéis de imóveis. CPF se PF, CNPJ se escritório LTDA.
 
 ---
 
