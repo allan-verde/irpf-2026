@@ -172,6 +172,7 @@ const COR_AMBAR = "#c89b2a";
 const COR_LARANJA = "#cc6b2a";
 const COR_AZUL = "#3a5876";
 const COR_CINZA = "#9b9285";
+const COR_CAFE = "#6b3a1f";   // marrom café torrado — destaque do título "Café com o Leão"
 
 
 async function fileToBase64(file) {
@@ -757,6 +758,41 @@ function modificarReg25(linha, dep) {
   }
   if (dep.parentesco_cod) s = escreverTexto(s, 18, 2, String(dep.parentesco_cod).padStart(2, "0"));
   return recalcLinhaCrc(s);
+}
+
+// Cria uma linha reg 25 (dependente novo) — 224 chars.
+// Engenharia reversa contra .DBK preenchido manualmente pelo PGD (dependente adicionado
+// na ficha "Dependentes"). Layout:
+//   pos 0-2    "25"                tipo
+//   pos 2-13   CPF titular         11 chars
+//   pos 13-17  "0000"              observado fixo (provável ID sequencial)
+//   pos 17-18  "1"                 flag fixo observado em todos os reg 25 examinados
+//   pos 18-20  parentesco_cod      preenchido por modificarReg25
+//   pos 20-80  nome                preenchido por modificarReg25
+//   pos 80-88  data DDMMAAAA       preenchido por modificarReg25
+//   pos 88-99  cpf dependente      preenchido por modificarReg25
+//   pos 99-111 12 espaços          não mapeado (provável continuidade)
+//   pos 111-112 "0"                flag fixo observado
+//   pos 112-213 101 espaços        não mapeado (raça/cor, email, celular, "mora com titular" etc.
+//                                  ainda não engenheirados — quando aparecer DBK com esses
+//                                  campos preenchidos, mapear)
+//   pos 213-214 "1"                flag fixo observado
+//   pos 214-224 CRC32              recalculado por modificarReg25
+function criarReg25(cpfContrib, dep) {
+  const cpfT = String(cpfContrib).replace(/\D/g, "").padStart(11, "0").slice(0, 11);
+  let s = "25" + cpfT;
+  s += "0000";                     // 13-17
+  s += "1";                        // 17-18 flag fixo
+  s += "00";                       // 18-20 placeholder parentesco
+  s += " ".repeat(60);             // 20-80 placeholder nome
+  s += "00000000";                 // 80-88 placeholder data
+  s += "0".repeat(11);             // 88-99 placeholder cpf dep
+  s += " ".repeat(12);             // 99-111
+  s += "0";                        // 111-112 flag fixo
+  s += " ".repeat(101);            // 112-213
+  s += "1";                        // 213-214 flag fixo
+  s += "0".repeat(10);             // 214-224 CRC placeholder
+  return modificarReg25(s, dep);   // preenche dados + recalcula CRC
 }
 
 function modificarReg27(linha, bem) {
@@ -1816,6 +1852,24 @@ function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
     linhasAInserir.push(criarReg88(cpfContrib, e, linhaBase88));
     deltasT9["88"] = (deltasT9["88"] || 0) + 1;
     aplicadas.push(`exclusivo novo ${e.resumo || e.nome_fonte?.slice(0, 30) || ""}`);
+  });
+
+  // 25 — dependentes NOVOS (criação na ficha "Dependentes")
+  // Cada item em dependentes_novos_aviso vira um reg 25 novo.
+  // Itens "string" (legados, sem campos estruturados) são ignorados — só dá pra
+  // criar reg 25 quando há nome + data_nascimento + cpf + parentesco_cod.
+  (patch.dependentes_novos_aviso || []).forEach((_d, i) => {
+    const d = aplicaOv(_d, `dep_novo_${i}`);
+    if (aprovacoes[`dep_novo_${i}`] === false) return;
+    if (typeof d === "string") return;
+    // Validações mínimas: sem CPF + nome o reg fica inválido no PGD
+    if (!d.cpf || !d.nome) {
+      console.warn(`dep_novo_${i}: faltam campos obrigatórios (cpf/nome) — pulando criação do reg 25`);
+      return;
+    }
+    linhasAInserir.push(criarReg25(cpfContrib, d));
+    deltasT9["25"] = (deltasT9["25"] || 0) + 1;
+    aplicadas.push(`dependente novo ${d.nome?.slice(0, 40) || ""}`);
   });
 
   // ===== Carnê-Leão =====
@@ -4601,7 +4655,8 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
   const acoesAlterado = (chave) => ({
     aprovar: {
       aprovado: aprovacoes[chave] !== false,
-      label: "Aceitar alteração",
+      labelAtivo: "✓ Alteração aceita",
+      labelInativo: "✗ Rejeitada — clique para aceitar",
       cor: COR_VERDE,
       onToggle: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
     },
@@ -4612,7 +4667,8 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
   const acoesNovo = (chave) => ({
     aprovar: {
       aprovado: aprovacoes[chave] !== false,
-      label: "Aceitar item novo",
+      labelAtivo: "✓ Item novo aceito",
+      labelInativo: "✗ Rejeitado — clique para aceitar",
       cor: COR_VERDE,
       onToggle: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
     },
@@ -4623,7 +4679,8 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
   const acoesRemover = (chave) => ({
     aprovar: {
       aprovado: aprovacoes[chave] !== false,
-      label: "Confirmar remoção",
+      labelAtivo: "✓ Remoção confirmada",
+      labelInativo: "✗ Mantido — clique para confirmar remoção",
       cor: COR_VERMELHO,
       onToggle: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
     },
@@ -5469,11 +5526,11 @@ function BarraAcoes({ acoes, podeEditar, onEditar }) {
         <BotaoToggle
           ativo={!!aprovar.aprovado}
           onClick={() => aprovar.onToggle(!aprovar.aprovado)}
-          labelAtivo={`✓ ${aprovar.label}`}
-          labelInativo={`✗ Rejeitado — clique para reativar`}
+          labelAtivo={aprovar.labelAtivo}
+          labelInativo={aprovar.labelInativo}
           corAtivo={aprovar.cor || COR_VERDE}
           corInativo={COR_SUTIL}
-          title={aprovar.aprovado ? "Clique pra rejeitar essa mudança" : "Clique pra aceitar de volta"}
+          title={aprovar.aprovado ? "Clique pra rejeitar/desfazer" : "Clique pra aceitar de volta"}
         />
       )}
       {excluir && (
@@ -6532,8 +6589,8 @@ function EstudioIRPFInner() {
             <div style={{ fontSize: 11, letterSpacing: 1.8, textTransform: "uppercase", color: COR_SUTIL, fontWeight: 600, marginBottom: 8 }}>
               ODos · Aceleradora de Negócios
             </div>
-            <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 50, letterSpacing: -1.4, lineHeight: 1.02, margin: "0 0 10px" }}>
-              Café com o Leão
+            <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 50, letterSpacing: -1.4, lineHeight: 1.02, margin: "0 0 10px", color: COR_CAFE }}>
+              Café com o <span style={{ fontStyle: "italic" }}>Leão</span>
             </h1>
             {templateInfo?.anoDeclaracao && (
               <div style={{ fontSize: 13, color: COR_SUTIL }}>
