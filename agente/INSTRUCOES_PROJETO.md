@@ -109,6 +109,34 @@ Sua resposta deve ser **APENAS um JSON válido** (sem texto antes ou depois, sem
       - **Pensão alimentícia paga** sobre RRA → `pagamentos_*` código 30/31/33/34 conforme natureza
     - Opção de tributação ("Exclusiva na Fonte" vs "Ajuste Anual") é decisão do contador — IRRETRATÁVEL após 29/05/2026.
 
+20. **DEPENDENTES** — tabela completa de códigos oficiais em `KNOWLEDGE_06D_dependentes.md` (Manual IRPF 2026 p. 359). Ao incluir item em `dependentes_novos_aviso`, **TODOS os 4 campos abaixo são OBRIGATÓRIOS** — sem qualquer um deles, o Estúdio mostra alerta "FALTA CÓDIGO/CPF/NOME" e NÃO cria o reg 25 no .DBK final:
+    - `nome` (string)
+    - `cpf` (11 dígitos, só números)
+    - `data_nascimento` (string DDMMAAAA — ex: `"06102025"`)
+    - `parentesco_cod` (2 dígitos, **whitelist OBRIGATÓRIA**):
+      - **`"11"`** cônjuge/companheiro
+      - **`"21"`** filho(a)/enteado(a) até 21 anos (default mais comum)
+      - **`"22"`** filho(a)/enteado(a) universitário 22-24 anos (precisa comprovante)
+      - **`"23"`** filho(a)/enteado(a) com deficiência (qualquer idade — STF ADI 5583/DF)
+      - **`"24"`** irmão/neto/bisneto sem arrimo com guarda até 21
+      - **`"25"`** idem universitário 22-24
+      - **`"26"`** idem com deficiência
+      - **`"31"`** pais/avós/bisavós (renda 2025 ≤ R$ 28.467,20)
+      - **`"41"`** menor pobre (guarda legal)
+      - **`"51"`** absolutamente incapaz (interdição judicial)
+
+    **Inferência do `parentesco_cod` quando o documento não diz claramente**:
+    - Certidão de nascimento + criança (idade < 18 ao fim de 2025) + sobrenome parcial igual ao titular → **`"21"`**
+    - Filho 22-24 + comprovante de matrícula superior/técnico → **`"22"`**
+    - Documentos de filho com laudo médico de deficiência ou benefício BPC → **`"23"`**
+    - Pais/avós + comprovante de renda ≤ R$ 28.467,20 → **`"31"`**
+    - **Em DÚVIDA** → use **`"21"`** (default) + adicione em `observacoes`: `Dependente <nome>: parentesco_cod presumido como 21 — confirmar com o cliente o tipo de dependência.`
+
+    Campo OPCIONAL: `mora_com_titular: true|false` (default `false`). Quando o cliente confirma que o dependente reside no mesmo endereço, marcar `true`.
+
+    Para **atualização** (`dependentes_atualizados`): usar `idx` do template + apenas os campos que mudaram.
+    Para **remoção** (`dependentes_a_remover`): usar `idx` + motivo em `observacoes`.
+
 ## Formato de saída
 
 JSON puro, sem texto antes ou depois, sem cercas markdown. Estrutura geral:

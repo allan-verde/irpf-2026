@@ -757,12 +757,17 @@ function modificarReg25(linha, dep) {
     s = escreverTexto(s, 88, 11, cpf);
   }
   if (dep.parentesco_cod) s = escreverTexto(s, 18, 2, String(dep.parentesco_cod).padStart(2, "0"));
+  // Flag "Dependente mora com o titular da declaração" — checkbox no PGD.
+  // Descoberto por engenharia reversa contra 2 arquivos do mesmo cliente: pos 213 varia
+  // entre "0" (não mora) e "1" (mora) conforme o checkbox.
+  if (dep.mora_com_titular !== undefined) {
+    s = escreverTexto(s, 213, 1, dep.mora_com_titular ? "1" : "0");
+  }
   return recalcLinhaCrc(s);
 }
 
 // Cria uma linha reg 25 (dependente novo) — 224 chars.
-// Engenharia reversa contra .DBK preenchido manualmente pelo PGD (dependente adicionado
-// na ficha "Dependentes"). Layout:
+// Engenharia reversa contra .DBK preenchidos manualmente pelo PGD. Layout:
 //   pos 0-2    "25"                tipo
 //   pos 2-13   CPF titular         11 chars
 //   pos 13-17  "0000"              observado fixo (provável ID sequencial)
@@ -773,10 +778,12 @@ function modificarReg25(linha, dep) {
 //   pos 88-99  cpf dependente      preenchido por modificarReg25
 //   pos 99-111 12 espaços          não mapeado (provável continuidade)
 //   pos 111-112 "0"                flag fixo observado
-//   pos 112-213 101 espaços        não mapeado (raça/cor, email, celular, "mora com titular" etc.
+//   pos 112-213 101 espaços        não mapeado (raça/cor, email, celular,
 //                                  ainda não engenheirados — quando aparecer DBK com esses
 //                                  campos preenchidos, mapear)
-//   pos 213-214 "1"                flag fixo observado
+//   pos 213-214 "0" | "1"          flag "Dependente mora com o titular" (checkbox PGD).
+//                                  Default "0" (não mora). Override via campo
+//                                  `mora_com_titular: true` no patch.
 //   pos 214-224 CRC32              recalculado por modificarReg25
 function criarReg25(cpfContrib, dep) {
   const cpfT = String(cpfContrib).replace(/\D/g, "").padStart(11, "0").slice(0, 11);
@@ -790,9 +797,9 @@ function criarReg25(cpfContrib, dep) {
   s += " ".repeat(12);             // 99-111
   s += "0";                        // 111-112 flag fixo
   s += " ".repeat(101);            // 112-213
-  s += "1";                        // 213-214 flag fixo
+  s += "0";                        // 213-214 default: NÃO mora com titular (mais conservador)
   s += "0".repeat(10);             // 214-224 CRC placeholder
-  return modificarReg25(s, dep);   // preenche dados + recalcula CRC
+  return modificarReg25(s, dep);   // preenche dados + flag mora_com_titular se vier + recalcula CRC
 }
 
 function modificarReg27(linha, bem) {
@@ -807,13 +814,63 @@ function modificarReg28(linha, divida) {
   if (divida.valor_atual != null) s = escreverNumero(s, 540, 13, divida.valor_atual, 100);
   if (divida.valor_anterior != null) s = escreverNumero(s, 527, 13, divida.valor_anterior, 100);
   if (divida.valor_pago != null) s = escreverNumero(s, 553, 13, divida.valor_pago, 100);
+  if (divida.codigo != null) s = escreverTexto(s, 13, 2, String(divida.codigo).padStart(2, "0").slice(0, 2));
+  if (divida.discriminacao != null) s = escreverTexto(s, 15, 512, divida.discriminacao, { upper: true, semAcento: true });
   return recalcLinhaCrc(s);
 }
+// criarReg28 foi declarado mais abaixo no arquivo (perto de outros criarReg*) — não duplicar aqui.
 
 function modificarReg86(linha, isento) {
   let s = linha;
   if (isento.valor != null) s = escreverNumero(s, 103, 13, isento.valor, 100);
+  if (isento.cnpj_fonte != null) {
+    const cnpj = String(isento.cnpj_fonte).replace(/\D/g, "").padStart(14, "0").slice(-14);
+    s = escreverTexto(s, 29, 14, cnpj);
+  }
+  if (isento.nome_fonte != null) s = escreverTexto(s, 43, 60, isento.nome_fonte, { upper: true, semAcento: true });
+  if (isento.descricao != null) s = escreverTexto(s, 116, 60, isento.descricao, { upper: true, semAcento: true });
+  if (isento.tipo_beneficiario != null) s = escreverTexto(s, 13, 1, String(isento.tipo_beneficiario).slice(0, 1) || "T");
   return recalcLinhaCrc(s);
+}
+
+// Constrói reg 86 (isento genérico cód 99) vazio — 191 chars.
+// Mesma estratégia dos outros: prefere reusar linhaBase do template (que tem possíveis
+// flags do PGD que ainda não engenheiramos completamente) e só sobrescreve campos.
+function linhaReg86Vazia(cpfContrib, linhaBase) {
+  const cpf = String(cpfContrib).replace(/\D/g, "").padStart(11, "0").slice(0, 11);
+  if (linhaBase && linhaBase.length === 191) {
+    let s = linhaBase;
+    s = escreverTexto(s, 2, 11, cpf);             // CPF titular
+    s = escreverTexto(s, 13, 1, "T");             // tipo beneficiário (T=titular default)
+    s = escreverTexto(s, 14, 11, cpf);            // CPF beneficiário (= titular default)
+    s = escreverTexto(s, 29, 14, "00000000000000"); // CNPJ fonte (zero)
+    s = escreverTexto(s, 43, 60, "");             // nome fonte vazio
+    s = escreverNumero(s, 103, 13, 0, 100);       // valor 0
+    s = escreverTexto(s, 116, 60, "");            // descricao vazia
+    return s;
+  }
+  // Sem linhaBase do template — construir do zero.
+  // Pos 25-29 = "0026" e pos 176-181 = "00000" são flags observadas em amostra do PGD.
+  // Se aparecerem variações em outros .DBK, mapear como campos editáveis.
+  let s = "86" + cpf;                             // 0-13
+  s += "T";                                        // 13-14 tipo benef
+  s += cpf;                                        // 14-25 cpf benef
+  s += "0026";                                     // 25-29 flag observada fixa
+  s += "00000000000000";                           // 29-43 CNPJ fonte (zero)
+  s += " ".repeat(60);                             // 43-103 nome fonte
+  s += "0".repeat(13);                             // 103-116 valor
+  s += " ".repeat(60);                             // 116-176 descricao
+  s += "00000";                                    // 176-181 flag observada fixa
+  s += "0".repeat(10);                             // 181-191 CRC placeholder
+  return s;
+}
+
+// Cria reg 86 (isento código 99 genérico) com CRC válido.
+// Reg 84 (códigos tipados 01-28) NÃO é tratado aqui — formulário tem layout próprio
+// e ainda não foi engenheirado pra criação.
+function criarReg86(cpfContrib, isento, linhaBase) {
+  let s = linhaReg86Vazia(cpfContrib, linhaBase);
+  return modificarReg86(s, isento);
 }
 
 function modificarReg26(linha, pagamento) {
@@ -1467,6 +1524,24 @@ REGRAS DURAS:
     - **Rendimentos exclusivos**: comparar CNPJ + código tipo rendimento. Não duplique.
     Quando em dúvida, prefira ATUALIZAR um item existente a CRIAR um novo (a duplicação corrompe a declaração).
 
+17. **DEPENDENTES NOVOS** (\`dependentes_novos_aviso\`, reg 25 do .DBK): TODOS os 4 campos abaixo são **OBRIGATÓRIOS** — se faltar qualquer um, o Estúdio NÃO cria o reg 25 no .DBK final:
+    - \`nome\`: string
+    - \`cpf\`: 11 dígitos (só números)
+    - \`data_nascimento\`: string formato DDMMAAAA (ex: "06102025")
+    - \`parentesco_cod\`: 2 dígitos da whitelist OBRIGATÓRIA abaixo. **Use o campo \`parentesco_cod\`, NÃO use \`codigo\`** (nome de campo é diferente das outras seções):
+       * **"11"** cônjuge/companheiro
+       * **"21"** filho(a)/enteado(a) até 21 anos (DEFAULT mais comum — use quando em dúvida)
+       * **"22"** filho(a)/enteado(a) universitário 22-24 anos
+       * **"23"** filho(a)/enteado(a) com deficiência (qualquer idade)
+       * **"24"** irmão/neto/bisneto sem arrimo com guarda até 21
+       * **"25"** idem universitário 22-24
+       * **"26"** idem com deficiência
+       * **"31"** pais/avós/bisavós (renda anual 2025 <= R$ 28.467,20)
+       * **"41"** menor pobre (guarda legal)
+       * **"51"** absolutamente incapaz (interdição judicial)
+    - Em dúvida, use **"21"** + adicione em "observacoes": "Dependente <nome>: parentesco_cod presumido como 21 — confirmar com cliente o tipo de dependência."
+    - Campo OPCIONAL: \`mora_com_titular\` (boolean, default false). Marcar true quando o cliente confirma coabitação.
+
 FORMATO DO PATCH (JSON, sem markdown, sem cercas):
 {
   "contribuinte": null | { "nome"?: "...", "email"?: "...", "telefone"?: "...", "data_nascimento"?: "DDMMAAAA", "titulo_eleitor"?: "..." },
@@ -1526,7 +1601,7 @@ FORMATO DO PATCH (JSON, sem markdown, sem cercas):
     { "resumo": "{tipo} · {beneficiário}", "codigo": "21", "cnpj_cpf": "", "nome": "", "valor_pago": 0, "origem": "" }
   ],
   "dependentes_novos_aviso": [
-    { "resumo": "...", "codigo": "21", "nome": "", "cpf": "", "data_nascimento": "DDMMAAAA" }
+    { "resumo": "...", "parentesco_cod": "21", "nome": "", "cpf": "", "data_nascimento": "DDMMAAAA", "mora_com_titular": false }
   ],
   "ano_referencia": "${anoCalAtual}",
   "observacoes": "qualquer ressalva, dado faltante, divergência"
@@ -1559,7 +1634,7 @@ INSTRUÇÕES IMPORTANTES:
 // APLICAÇÃO DO PATCH no template
 // ============================================================
 
-function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
+function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}, manualNovos = { bem: [], divida: [], fonte: [], pag: [], isento: [], excl: [], dep: [] }) {
   // aprovacoes é um objeto { 'contrib': bool, 'fonte_<cnpj>': bool, 'bem_<idx>': bool, ... }
   // manualOverrides são edições do contador sobre itens propostos (Fase 1 da edição manual).
   // Chave: ex. "bem_atualizado_3", "bem_novo_0", "fonte_atualizada_5". Valor: subset de campos sobrescritos.
@@ -1857,14 +1932,21 @@ function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
   // 25 — dependentes NOVOS (criação na ficha "Dependentes")
   // Cada item em dependentes_novos_aviso vira um reg 25 novo.
   // Itens "string" (legados, sem campos estruturados) são ignorados — só dá pra
-  // criar reg 25 quando há nome + data_nascimento + cpf + parentesco_cod.
+  // criar reg 25 quando há nome + data_nascimento + cpf + parentesco_cod válidos.
   (patch.dependentes_novos_aviso || []).forEach((_d, i) => {
     const d = aplicaOv(_d, `dep_novo_${i}`);
     if (aprovacoes[`dep_novo_${i}`] === false) return;
     if (typeof d === "string") return;
-    // Validações mínimas: sem CPF + nome o reg fica inválido no PGD
+    // Validações mínimas — campos obrigatórios pro PGD aceitar o reg 25
     if (!d.cpf || !d.nome) {
-      console.warn(`dep_novo_${i}: faltam campos obrigatórios (cpf/nome) — pulando criação do reg 25`);
+      console.warn(`dep_novo_${i}: faltam CPF/nome — pulando criação do reg 25. Item:`, d);
+      return;
+    }
+    // parentesco_cod precisa estar na whitelist (KNOWLEDGE_06D)
+    const codigosValidos = ["11","21","22","23","24","25","26","31","41","51"];
+    const cod = String(d.parentesco_cod || "").padStart(2, "0");
+    if (!codigosValidos.includes(cod)) {
+      console.warn(`dep_novo_${i}: parentesco_cod inválido "${d.parentesco_cod}" — pulando criação. Use o lápis pra editar e definir o código antes de gerar o .DBK.`);
       return;
     }
     linhasAInserir.push(criarReg25(cpfContrib, d));
@@ -2050,6 +2132,110 @@ function aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides = {}) {
     const linhaBase = novasLinhas[tpl._idx] != null ? novasLinhas[tpl._idx] : linhasOriginais[tpl._idx];
     novasLinhas[tpl._idx] = modificarReg25(linhaBase, ov);
     aplicadas.push(`dependente D${idx} (edição manual)`);
+  });
+
+  // ============================================================
+  // ITENS MANUAIS — criados pelo contador via "+ Adicionar" ou "⎘ Duplicar".
+  // Pra cada tipo, valida campos mínimos, chama o criarReg correspondente,
+  // empilha em linhasAInserir e incrementa deltasT9.
+  // ============================================================
+
+  // BENS manuais — reg 27
+  (manualNovos.bem || []).forEach((b, i) => {
+    if (!b.discriminacao && !b.grupo && !b.codigo) {
+      console.warn(`bem manual #${i}: campos mínimos vazios — pulando`);
+      return;
+    }
+    linhasAInserir.push(criarReg27(cpfContrib, b, linhaBase27));
+    deltasT9["27"] = (deltasT9["27"] || 0) + 1;
+    aplicadas.push(`bem novo manual ${(b.discriminacao || "").slice(0, 30)}`);
+  });
+
+  // DÍVIDAS manuais — reg 28
+  const linhaBase28Manual = buscarLinhaBase(linhasOriginais, "28");
+  (manualNovos.divida || []).forEach((v, i) => {
+    if (!v.discriminacao && !v.codigo) {
+      console.warn(`dívida manual #${i}: codigo/discriminacao vazios — pulando`);
+      return;
+    }
+    linhasAInserir.push(criarReg28(cpfContrib, v, linhaBase28Manual));
+    deltasT9["28"] = (deltasT9["28"] || 0) + 1;
+    aplicadas.push(`dívida nova manual ${(v.discriminacao || "").slice(0, 30)}`);
+  });
+
+  // FONTES PAGADORAS manuais — reg 21
+  const linhaBase21Manual = buscarLinhaBase(linhasOriginais, "21");
+  (manualNovos.fonte || []).forEach((f, i) => {
+    if (!f.cnpj) {
+      console.warn(`fonte manual #${i}: CNPJ vazio — pulando`);
+      return;
+    }
+    const cnpj = String(f.cnpj).replace(/\D/g, "").padStart(14, "0").slice(-14);
+    linhasAInserir.push(criarReg21(cpfContrib, { ...f, cnpj }, linhaBase21Manual));
+    deltasT9["21"] = (deltasT9["21"] || 0) + 1;
+    aplicadas.push(`fonte nova manual ${(f.nome || cnpj).slice(0, 30)}`);
+  });
+
+  // PAGAMENTOS manuais — reg 26
+  const linhaBase26Manual = buscarLinhaBase(linhasOriginais, "26");
+  (manualNovos.pag || []).forEach((p, i) => {
+    if (!p.codigo || !p.cnpj_cpf) {
+      console.warn(`pagamento manual #${i}: codigo/cnpj_cpf vazio — pulando`);
+      return;
+    }
+    linhasAInserir.push(criarReg26(cpfContrib, p, linhaBase26Manual));
+    deltasT9["26"] = (deltasT9["26"] || 0) + 1;
+    aplicadas.push(`pagamento novo manual ${(p.nome || "").slice(0, 30)}`);
+  });
+
+  // RENDIMENTOS EXCLUSIVOS manuais — reg 88
+  const linhaBase88Manual = buscarLinhaBase(linhasOriginais, "88");
+  (manualNovos.excl || []).forEach((e, i) => {
+    if (!e.codigo) {
+      console.warn(`exclusivo manual #${i}: codigo vazio — pulando`);
+      return;
+    }
+    linhasAInserir.push(criarReg88(cpfContrib, e, linhaBase88Manual));
+    deltasT9["88"] = (deltasT9["88"] || 0) + 1;
+    aplicadas.push(`exclusivo novo manual ${(e.nome_fonte || "").slice(0, 30)}`);
+  });
+
+  // RENDIMENTOS ISENTOS manuais — reg 86 (códigos 99 genéricos) + aviso pra códigos 01-28 (reg 84)
+  // Reg 84 NÃO é gerado pelo Estúdio — o usuário precisa lançar manualmente no PGD.
+  const linhaBase86Manual = buscarLinhaBase(linhasOriginais, "86");
+  (manualNovos.isento || []).forEach((r, i) => {
+    // Códigos 01-28 são tipados (reg 84) — Estúdio NÃO gera, só avisa
+    const codigosReg84 = ["01","02","03","04","05","06","07","08","09","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24","25","27","28"];
+    const cod = String(r.codigo || "99").padStart(2, "0");
+    if (codigosReg84.includes(cod)) {
+      console.warn(`isento manual #${i}: código ${cod} é tipado (reg 84) — não gerado automaticamente. Lance manualmente no PGD na ficha "Rendimentos Isentos e Não Tributáveis".`);
+      return;
+    }
+    // Código 99 (ou ausente) → reg 86 genérico
+    if (!r.descricao && !r.nome_fonte) {
+      console.warn(`isento manual #${i}: descrição/nome_fonte vazios — pulando`);
+      return;
+    }
+    linhasAInserir.push(criarReg86(cpfContrib, r, linhaBase86Manual));
+    deltasT9["86"] = (deltasT9["86"] || 0) + 1;
+    aplicadas.push(`isento novo manual ${(r.descricao || r.nome_fonte || "").slice(0, 30)}`);
+  });
+
+  // DEPENDENTES manuais — reg 25 (mesma validação dos dep_novo da IA)
+  (manualNovos.dep || []).forEach((d, i) => {
+    if (!d.cpf || !d.nome) {
+      console.warn(`dep manual #${i}: cpf/nome obrigatório — pulando`);
+      return;
+    }
+    const codigosValidos = ["11","21","22","23","24","25","26","31","41","51"];
+    const cod = String(d.parentesco_cod || "").padStart(2, "0");
+    if (!codigosValidos.includes(cod)) {
+      console.warn(`dep manual #${i}: parentesco_cod inválido "${d.parentesco_cod}" — pulando`);
+      return;
+    }
+    linhasAInserir.push(criarReg25(cpfContrib, d));
+    deltasT9["25"] = (deltasT9["25"] || 0) + 1;
+    aplicadas.push(`dependente novo manual ${(d.nome || "").slice(0, 40)}`);
   });
 
   // Inserir as novas linhas ANTES do T9 e atualizar o footer
@@ -4640,8 +4826,85 @@ function mesclarItem(itemTemplate, patchItem) {
 }
 
 // Painel detalhado do template — mostra todos os itens com status semáforo
-function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes = () => {}, manualOverrides = {}, setManualOverrides = () => {} }) {
+function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes = () => {}, manualOverrides = {}, setManualOverrides = () => {}, manualNovos = { bem: [], divida: [], fonte: [], pag: [], isento: [], excl: [], dep: [] }, setManualNovos = () => {} }) {
   if (!templateInfo) return null;
+
+  // ============================================================
+  // Helpers de itens manuais (criar/duplicar/remover/atualizar)
+  // ============================================================
+
+  // Gera um ID curto único pra cada item manual (suficiente pra distinguir cards na lista)
+  const gerarUuid = () => `m${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, "0")}`;
+
+  // Cria item vazio do tipo dado e adiciona à lista de manualNovos.
+  // Cada tipo tem campos default específicos pra reduzir trabalho do contador no primeiro preenchimento.
+  const adicionarNovoItem = (tipo) => {
+    const defaults = {
+      bem:    { grupo: "", codigo: "", discriminacao: "", valor_anterior: 0, valor_atual: 0, pais: "105" },
+      divida: { codigo: "", discriminacao: "", valor_anterior: 0, valor_atual: 0, valor_pago: 0, credor: "" },
+      fonte:  { cnpj: "", nome: "", rendimentos_tributaveis: 0, decimo_terceiro: 0, inss: 0, ir_retido: 0 },
+      pag:    { codigo: "", cnpj_cpf: "", nome: "", valor_pago: 0 },
+      isento: { codigo: "99", cnpj_fonte: "", nome_fonte: "", descricao: "", valor: 0 },
+      excl:   { codigo: "", cnpj_fonte: "", nome_fonte: "", valor: 0, tipo_beneficiario: "T" },
+      dep:    { nome: "", cpf: "", data_nascimento: "", parentesco_cod: "21", mora_com_titular: false },
+    };
+    const novo = { _uuid: gerarUuid(), ...(defaults[tipo] || {}) };
+    setManualNovos({ ...manualNovos, [tipo]: [...(manualNovos[tipo] || []), novo] });
+  };
+
+  // Duplica um item existente — copia campos relevantes + adiciona à lista de manualNovos.
+  // O contador pode então editar campos específicos (CNPJ, valor, etc.) antes de gerar o .DBK.
+  const duplicarItem = (tipo, item) => {
+    // Remove metadados internos (idx, _idx, origem) ao clonar — esses são do template original
+    const { idx, _idx, origem, resumo, _uuid, ...campos } = item || {};
+    const clone = { _uuid: gerarUuid(), ...campos };
+    setManualNovos({ ...manualNovos, [tipo]: [...(manualNovos[tipo] || []), clone] });
+  };
+
+  // Remove item manual da lista (não vai pro .DBK)
+  const removerNovo = (tipo, uuid) => {
+    setManualNovos({ ...manualNovos, [tipo]: (manualNovos[tipo] || []).filter(x => x._uuid !== uuid) });
+  };
+
+  // Atualiza campos de um item manual (chamado pelo lápis do ItemCard)
+  const atualizarNovo = (tipo, uuid, valores) => {
+    setManualNovos({
+      ...manualNovos,
+      [tipo]: (manualNovos[tipo] || []).map(x => x._uuid === uuid ? { ...x, ...valores } : x),
+    });
+  };
+
+  // Gera props pra cards de itens manuais — todos status "novo", com lápis + excluir, sem aprovação
+  // (são sempre incluídos no .DBK — o contador os criou de propósito).
+  // Para isentos manuais: detecta códigos tipados (reg 84) e adiciona alerta visual bloqueante
+  // explicando que o Estúdio não gera reg 84 e o contador precisa lançar manualmente no PGD.
+  const cardPropsManual = (tipo, item) => {
+    const props = {
+      item,
+      onSalvarEdicao: (valores) => atualizarNovo(tipo, item._uuid, valores),
+      acoes: {
+        excluir: {
+          marcado: false,
+          label: "Remover este item",
+          onToggle: () => removerNovo(tipo, item._uuid),
+        },
+      },
+    };
+    if (tipo === "isento") {
+      const codigosReg84 = ["01","02","03","04","05","06","07","08","09","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24","25","27","28"];
+      const cod = String(item.codigo || "99").padStart(2, "0");
+      if (codigosReg84.includes(cod)) {
+        props.alertas = [{
+          texto: "REG 84 — LANÇAR MANUAL",
+          cor: COR_AMBAR,
+          bloqueante: true,
+          titulo: "Código tipado — não gerado automaticamente",
+          detalhe: `O código ${cod} usa o reg 84 (isentos tipados) que tem layout específico ainda não engenheirado pelo Estúdio. Esse item NÃO entra no .DBK final. Use os dados abaixo pra lançar manualmente no PGD: ficha "Rendimentos Isentos e Não Tributáveis" → tipo de rendimento ${cod}. Pra que o Estúdio gere automaticamente, mude o código pra "99" (isento genérico, descrição livre).`,
+        }];
+      }
+    }
+    return props;
+  };
 
   // ============================================================
   // Fábricas de "acoes" pro ItemCard — controlam aprovação e exclusão inline.
@@ -4686,6 +4949,22 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     },
   });
 
+  // Ações pra item REPETIR (bem estático auto-repetido do ano anterior).
+  // Default é aceito (repetir) — usuário pode rejeitar pra manter o valor zerado em 2025.
+  // Chave bem_auto_<idx> já é consumida pelo aplicarPatch (loop de auto-repetir).
+  const acoesRepetir = (idx) => {
+    const chave = `bem_auto_${idx}`;
+    return {
+      aprovar: {
+        aprovado: aprovacoes[chave] !== false,
+        labelAtivo: "✓ Valor repetido de 2024",
+        labelInativo: "✗ Não repetir — manter zerado em 2025",
+        cor: COR_AMBAR,
+        onToggle: (v) => setAprovacoes({ ...aprovacoes, [chave]: v }),
+      },
+    };
+  };
+
   // Ações pra item NEUTRO (sem proposta) ou REVISAR (zerado) — só permite excluir.
   // chavePrefixo: ex "bem", "divida", "pag", "isento", "excl"
   // idx: índice do item no template
@@ -4721,30 +5000,55 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
   // Helper: gera props completas pra ItemCard de item ATUALIZADO pela IA (status=alterado).
   // Inclui o item já com override aplicado + callbacks de edição + ações de aprovação.
   // Para status remover, retorna acoes de confirmação de remoção (sem editar — item vai sumir).
-  // Para neutro/revisar/repetir, retorna acoes de excluir + permite editar manualmente.
+  // Para neutro/revisar/repetir, retorna acoes de aprovar (se aplicável) + excluir + permite editar.
   // O override edita o item e é aplicado no .DBK pelo aplicarPatch (mesmo em itens neutros).
+  // `onDuplicar` é passado em todos os status (exceto remover) — duplicar item zerado também é útil.
   const cardPropsAtualizado = (tipo, idx, status, item) => {
     const chaveOv = `${tipo}_atualizado_${idx}`;
     if (status === "alterado") {
       const chaveAprov = `${tipo}_${idx}`;
-      return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv), acoes: acoesAlterado(chaveAprov) };
+      return {
+        item: mesclarOverride(item, chaveOv),
+        ...propsEdicao(chaveOv),
+        acoes: { ...acoesAlterado(chaveAprov), ...acoesExcluir(tipo, idx) },
+        onDuplicar: () => duplicarItem(tipo, mesclarOverride(item, chaveOv)),
+      };
     }
     if (status === "remover") {
       const chaveAprov = `${tipo}_remover_${idx}`;
       return { item, acoes: acoesRemover(chaveAprov) };
     }
-    // status neutro / revisar / repetir — permite excluir E editar manualmente
-    return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv), acoes: acoesExcluir(tipo, idx) };
+    if (status === "auto_repetir") {
+      return {
+        item: mesclarOverride(item, chaveOv),
+        ...propsEdicao(chaveOv),
+        acoes: { ...acoesRepetir(idx), ...acoesExcluir(tipo, idx) },
+        onDuplicar: () => duplicarItem(tipo, mesclarOverride(item, chaveOv)),
+      };
+    }
+    // status neutro / revisar — permite excluir, editar manualmente, duplicar
+    return {
+      item: mesclarOverride(item, chaveOv),
+      ...propsEdicao(chaveOv),
+      acoes: acoesExcluir(tipo, idx),
+      onDuplicar: () => duplicarItem(tipo, mesclarOverride(item, chaveOv)),
+    };
   };
 
   // Helper: gera props completas pra ItemCard de item NOVO (status=novo).
-  // Edição sempre habilitada — esses itens vieram inteiros da IA, então faz sentido editar.
+  // Edição sempre habilitada. Permite duplicar (cria mais uma cópia manual).
+  // Não tem "excluir" — rejeitar a aprovação já tem o mesmo efeito (não inclui no .DBK).
   const cardPropsNovo = (tipo, i, item) => {
     const chaveOv = `${tipo}_novo_${i}`;
-    return { item: mesclarOverride(item, chaveOv), ...propsEdicao(chaveOv), acoes: acoesNovo(chaveOv) };
+    return {
+      item: mesclarOverride(item, chaveOv),
+      ...propsEdicao(chaveOv),
+      acoes: acoesNovo(chaveOv),
+      onDuplicar: () => duplicarItem(tipo, mesclarOverride(item, chaveOv)),
+    };
   };
 
-  const Bloco = ({ titulo, itens, vazio }) => {
+  const Bloco = ({ titulo, itens, vazio, tipoNovo, rotuloNovo }) => {
     const cabecalho = (
       <h4 style={{
         fontFamily: "'Fraunces', serif",
@@ -4767,16 +5071,44 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
         )}
       </h4>
     );
+    // Botão "+ Adicionar" — aparece no rodapé se tipoNovo for passado (i.e., tipo suporta criação manual)
+    const botaoAdicionar = tipoNovo && (
+      <button
+        type="button"
+        onClick={() => adicionarNovoItem(tipoNovo)}
+        style={{
+          marginTop: 8,
+          background: "transparent",
+          color: COR_SUTIL,
+          border: `1px dashed ${COR_BORDA}`,
+          padding: "8px 14px",
+          fontSize: 11,
+          letterSpacing: 0.5,
+          textTransform: "uppercase",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          fontWeight: 500,
+          width: "100%",
+          transition: "background 100ms ease, color 100ms ease, border-color 100ms ease",
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.borderColor = COR_TINTA; e.currentTarget.style.color = COR_TINTA; e.currentTarget.style.background = "#f5f1e8"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.borderColor = COR_BORDA; e.currentTarget.style.color = COR_SUTIL; e.currentTarget.style.background = "transparent"; }}
+      >
+        + Adicionar {rotuloNovo || tipoNovo}
+      </button>
+    );
     if (!itens || itens.length === 0) return (
       <div style={{ marginBottom: 28 }}>
         {cabecalho}
         <div style={{ fontSize: 12, color: COR_SUTIL, fontStyle: "italic", padding: "10px 14px", background: "#f5f1e8" }}>{vazio || "(vazio no template)"}</div>
+        {botaoAdicionar}
       </div>
     );
     return (
       <div style={{ marginBottom: 28 }}>
         {cabecalho}
         {itens}
+        {botaoAdicionar}
       </div>
     );
   };
@@ -4945,12 +5277,15 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     // Alerta de idade: filhos/enteados/irmãos têm limites legais
     // (até 21 sem condição, até 24 cursando ensino superior).
     // Acima desses limites, deduzir o dependente vira tema de revisão pelo contador.
+    // Mesmo quando dentro do limite, mostramos a idade como tag cinza pra contexto rápido.
     const idade = calcularIdade(d.data_nascimento, anoCalTpl);
     let alertaIdade = null;
     if (idade != null && idade > 24) {
       alertaIdade = { texto: `${idade} anos`, cor: COR_VERMELHO, titulo: `Maior de 24 — verificar se ainda se enquadra como dependente (idade no fim de ${labelAnoAtu})` };
     } else if (idade != null && idade > 21) {
       alertaIdade = { texto: `${idade} anos`, cor: COR_AMBAR, titulo: `Entre 22 e 24 — só se aceita como dependente se cursando ensino superior/técnico (tipo 22 ou 25). Idade no fim de ${labelAnoAtu}` };
+    } else if (idade != null) {
+      alertaIdade = { texto: `${idade} anos`, cor: COR_SUTIL, titulo: `Idade no fim de ${labelAnoAtu}` };
     }
     // Ações por status: dep_<idx> pra alteração, dep_remover_<idx> pra confirmação de remoção.
     // Dependentes não suportam exclusão manual (sem dep_revisar_remover no aplicarPatch).
@@ -4964,9 +5299,54 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
     return <ItemCard key={`dep${i}`} item={itemDep} idx={i + 1} prefixo="D" getHeader={(x) => x.resumo} status={status} alertaIdade={alertaIdade} acoes={acoesDep} {...propsEdicaoDep} />;
   });
   const dependentesNovosCards = (patch?.dependentes_novos_aviso || []).map((d, i) => {
-    const acoesDepNovo = acoesNovo(`dep_novo_${i}`);
+    const chaveOv = `dep_novo_${i}`;
+    const acoesDepNovo = acoesNovo(chaveOv);
     if (typeof d === "string") return <ItemCard key={`depn${i}`} item={{ resumo: d }} idx={(templateInfo.dependentes?.length || 0) + i + 1} prefixo="D" getHeader={(x) => x.resumo} status="novo" acoes={acoesDepNovo} />;
-    return <ItemCard key={`depn${i}`} item={d} idx={(templateInfo.dependentes?.length || 0) + i + 1} prefixo="D" getHeader={(x) => x.resumo || x.nome} status="novo" acoes={acoesDepNovo} />;
+    // Aplica override (lápis) e calcula alerta de idade pro dependente novo
+    const itemDepNovo = mesclarOverride(d, chaveOv);
+    const idadeN = calcularIdade(itemDepNovo.data_nascimento, anoCalTpl);
+    let alertaIdadeN = null;
+    if (idadeN != null && idadeN > 24) {
+      alertaIdadeN = { texto: `${idadeN} anos`, cor: COR_VERMELHO, titulo: `Maior de 24 — verificar se ainda se enquadra como dependente (idade no fim de ${labelAnoAtu})` };
+    } else if (idadeN != null && idadeN > 21) {
+      alertaIdadeN = { texto: `${idadeN} anos`, cor: COR_AMBAR, titulo: `Entre 22 e 24 — só se aceita como dependente se cursando ensino superior/técnico (tipo 22 ou 25). Idade no fim de ${labelAnoAtu}` };
+    } else if (idadeN != null) {
+      alertaIdadeN = { texto: `${idadeN} anos`, cor: COR_SUTIL, titulo: `Idade no fim de ${labelAnoAtu}` };
+    }
+    // Alertas bloqueantes — campos obrigatórios faltando.
+    // Mesma whitelist usada no aplicarPatch (KNOWLEDGE_06D).
+    // Sem esses campos, o reg 25 NÃO é gerado e o dep não aparece no .DBK final.
+    const alertasN = [];
+    const codigosValidos = ["11","21","22","23","24","25","26","31","41","51"];
+    const codDep = String(itemDepNovo.parentesco_cod || "").padStart(2, "0");
+    if (!itemDepNovo.parentesco_cod || !codigosValidos.includes(codDep)) {
+      alertasN.push({
+        texto: "FALTA CÓDIGO",
+        cor: COR_AMBAR,
+        bloqueante: true,
+        titulo: "parentesco_cod inválido",
+        detalhe: `O código de parentesco está vazio ou inválido (${itemDepNovo.parentesco_cod || "vazio"}). Clique em "✎ Editar" e defina um código válido (11 cônjuge · 21 filho até 21 · 22 filho universitário · 23 filho deficiência · 24 irmão/neto/bisneto com guarda · 25 idem universitário · 26 idem deficiência · 31 pais/avós · 41 menor pobre · 51 absolutamente incapaz). Sem isso, o dependente NÃO será adicionado ao .DBK.`,
+      });
+    }
+    if (!itemDepNovo.cpf) {
+      alertasN.push({
+        texto: "FALTA CPF",
+        cor: COR_VERMELHO,
+        bloqueante: true,
+        titulo: "CPF do dependente obrigatório",
+        detalhe: "Sem CPF, o dependente não é aceito pelo PGD. Clique em \"✎ Editar\" e preencha.",
+      });
+    }
+    if (!itemDepNovo.nome) {
+      alertasN.push({
+        texto: "FALTA NOME",
+        cor: COR_VERMELHO,
+        bloqueante: true,
+        titulo: "Nome do dependente obrigatório",
+        detalhe: "Sem nome, o dependente não é aceito pelo PGD.",
+      });
+    }
+    return <ItemCard key={`depn${i}`} item={itemDepNovo} idx={(templateInfo.dependentes?.length || 0) + i + 1} prefixo="D" getHeader={(x) => x.resumo || x.nome} status="novo" alertaIdade={alertaIdadeN} alertas={alertasN} acoes={acoesDepNovo} {...propsEdicao(chaveOv)} />;
   });
 
   // Rendimentos isentos
@@ -5043,18 +5423,69 @@ function ConteudoTemplate({ templateInfo, patch, aprovacoes = {}, setAprovacoes 
         )}
       </div>
 
+      {/* ============================================================
+          Cards de itens MANUAIS — criados pelo contador via "+ Adicionar" ou "⎘ Duplicar"
+          Cada array de `manualNovos[tipo]` vira lista de cards renderizados após os "novos da IA".
+          Esses cards sempre têm status="novo", lápis (editar) e botão pra remover do array.
+          ============================================================ */}
+      {(() => null)()}
+
       <Bloco titulo="Contribuinte / Endereço" itens={[
         <ItemCard key="c" item={contribItem} getHeader={(x) => x.resumo} status={statusContrib} camposDestacados={camposContribDestacados} />
       ]} />
 
+      {/* Cards manuais por tipo — gerados inline a partir de manualNovos */}
+      {(() => null)()}
+
       {/* Ordem espelhada do PGD da Receita Federal: dependentes → rendimentos PJ → isentos → exclusivos → pagamentos → bens → dívidas */}
-      <Bloco titulo="Dependentes" itens={[...dependentesCards, ...dependentesNovosCards]} vazio="Sem dependentes" />
-      <Bloco titulo="Rendimentos tributáveis recebidos de PJ" itens={[...fontesCards, ...fontesNovasCards]} vazio="Nenhuma fonte pagadora no template" />
-      <Bloco titulo="Rendimentos isentos e não tributáveis" itens={isentosCards} vazio="Sem rendimentos isentos no template" />
-      <Bloco titulo="Rendimentos sujeitos à tributação exclusiva/definitiva" itens={[...rendExclusivosCards, ...rendExclusivosNovosCards]} vazio="Sem rendimentos exclusivos no template" />
-      <Bloco titulo="Pagamentos efetuados" itens={[...pagamentosCards, ...pagamentosNovosCards]} vazio="Sem pagamentos no template" />
-      <Bloco titulo="Bens e direitos" itens={[...bensCards, ...bensNovosCards]} vazio="Sem bens no template" />
-      <Bloco titulo="Dívidas e ônus reais" itens={[...dividasCards, ...dividasNovasCards]} vazio="Sem dívidas no template" />
+      <Bloco titulo="Dependentes" tipoNovo="dep" rotuloNovo="dependente"
+        itens={[
+          ...dependentesCards,
+          ...dependentesNovosCards,
+          ...(manualNovos.dep || []).map(d => <ItemCard key={d._uuid} idx={(templateInfo.dependentes?.length || 0) + (patch?.dependentes_novos_aviso?.length || 0) + (manualNovos.dep.indexOf(d) + 1)} prefixo="D" getHeader={(x) => x.resumo || x.nome || "(novo manual)"} status="novo" {...cardPropsManual("dep", d)} />),
+        ]}
+        vazio="Sem dependentes" />
+      <Bloco titulo="Rendimentos tributáveis recebidos de PJ" tipoNovo="fonte" rotuloNovo="fonte"
+        itens={[
+          ...fontesCards,
+          ...fontesNovasCards,
+          ...(manualNovos.fonte || []).map(f => <ItemCard key={f._uuid} idx={(templateInfo.fontes?.length || 0) + (patch?.fontes_novas?.length || 0) + (manualNovos.fonte.indexOf(f) + 1)} prefixo="F" getHeader={(x) => x.resumo || x.nome || "(nova manual)"} status="novo" {...cardPropsManual("fonte", f)} />),
+        ]}
+        vazio="Nenhuma fonte pagadora no template" />
+      <Bloco titulo="Rendimentos isentos e não tributáveis" tipoNovo="isento" rotuloNovo="isento"
+        itens={[
+          ...isentosCards,
+          ...(manualNovos.isento || []).map(r => <ItemCard key={r._uuid} idx={(templateInfo.rendIsentos?.length || 0) + (manualNovos.isento.indexOf(r) + 1)} prefixo="I" getHeader={(x) => x.resumo || x.descricao || "(novo manual)"} status="novo" {...cardPropsManual("isento", r)} />),
+        ]}
+        vazio="Sem rendimentos isentos no template" />
+      <Bloco titulo="Rendimentos sujeitos à tributação exclusiva/definitiva" tipoNovo="excl" rotuloNovo="exclusivo"
+        itens={[
+          ...rendExclusivosCards,
+          ...rendExclusivosNovosCards,
+          ...(manualNovos.excl || []).map(r => <ItemCard key={r._uuid} idx={(templateInfo.rendExclusivos?.length || 0) + (patch?.rendimentos_exclusivos_novos_aviso?.length || 0) + (manualNovos.excl.indexOf(r) + 1)} prefixo="E" getHeader={(x) => x.resumo || x.nome_fonte || "(novo manual)"} status="novo" {...cardPropsManual("excl", r)} />),
+        ]}
+        vazio="Sem rendimentos exclusivos no template" />
+      <Bloco titulo="Pagamentos efetuados" tipoNovo="pag" rotuloNovo="pagamento"
+        itens={[
+          ...pagamentosCards,
+          ...pagamentosNovosCards,
+          ...(manualNovos.pag || []).map(p => <ItemCard key={p._uuid} idx={(templateInfo.pagamentos?.length || 0) + (patch?.pagamentos_novos_aviso?.length || 0) + (manualNovos.pag.indexOf(p) + 1)} prefixo="P" getHeader={(x) => x.resumo || x.nome || "(novo manual)"} status="novo" {...cardPropsManual("pag", p)} />),
+        ]}
+        vazio="Sem pagamentos no template" />
+      <Bloco titulo="Bens e direitos" tipoNovo="bem" rotuloNovo="bem"
+        itens={[
+          ...bensCards,
+          ...bensNovosCards,
+          ...(manualNovos.bem || []).map(b => <ItemCard key={b._uuid} idx={(templateInfo.bens?.length || 0) + (patch?.bens_novos_aviso?.length || 0) + (manualNovos.bem.indexOf(b) + 1)} prefixo="B" getHeader={(x) => x.resumo || x.discriminacao || "(novo manual)"} status="novo" {...cardPropsManual("bem", b)} />),
+        ]}
+        vazio="Sem bens no template" />
+      <Bloco titulo="Dívidas e ônus reais" tipoNovo="divida" rotuloNovo="dívida"
+        itens={[
+          ...dividasCards,
+          ...dividasNovasCards,
+          ...(manualNovos.divida || []).map(v => <ItemCard key={v._uuid} idx={(templateInfo.dividas?.length || 0) + (patch?.dividas_novas_aviso?.length || 0) + (manualNovos.divida.indexOf(v) + 1)} prefixo="V" getHeader={(x) => x.resumo || x.discriminacao || "(nova manual)"} status="novo" {...cardPropsManual("divida", v)} />),
+        ]}
+        vazio="Sem dívidas no template" />
     </div>
   );
 }
@@ -5272,23 +5703,68 @@ function EditableField({ campo, valor, onChange, autoFocus }) {
   );
 }
 
-function KV({ campo, valor, monetario, copiavel = true, destacado = false }) {
+// Formata o valor de um campo conforme a chave — DD/MM/AAAA pra datas, máscara
+// pra CPF/CNPJ, descrição inline pra parentesco_cod. Retorna { display, raw }.
+// Recebe valor já validado (não-null, não-vazio).
+function formatarValorCampo(campo, valor) {
+  const chave = String(campo || "").toLowerCase();
+  const raw = String(valor);
+  // Datas: aceita DDMMAAAA (8 dígitos) ou AAAAMMDD em algumas convenções
+  if (chave.includes("data") || chave.includes("nascimento")) {
+    const d = raw.replace(/\D/g, "");
+    if (d.length === 8) {
+      // Formato do PGD é DDMMAAAA — fmtData8 retorna DD/MM/AAAA
+      return { display: fmtData8(d), raw };
+    }
+  }
+  // CPF — 11 dígitos
+  if (chave === "cpf" || chave === "cpf_dependente" || chave === "cpf_titular_pagamento" || chave === "cpf_beneficiario_servico") {
+    const d = raw.replace(/\D/g, "");
+    if (d.length === 11) return { display: fmtCPF(d), raw };
+  }
+  // CNPJ — 14 dígitos
+  if (chave === "cnpj" || chave === "cnpj_fonte" || chave === "cnpj_cpf") {
+    const d = raw.replace(/\D/g, "");
+    if (d.length === 14) return { display: fmtCNPJ(d), raw };
+    if (d.length === 11) return { display: fmtCPF(d), raw };
+  }
+  // CEP — 8 dígitos
+  if (chave === "cep") {
+    const d = raw.replace(/\D/g, "");
+    if (d.length === 8) return { display: fmtCEP(d), raw };
+  }
+  // Parentesco: mostra "21 · Filho até 21 anos"
+  if (chave === "parentesco_cod" || chave === "relacao_dependencia" || chave === "tipo_dependente") {
+    const desc = descricaoParentesco(raw);
+    if (desc) return { display: `${raw} · ${desc}`, raw };
+  }
+  return { display: raw, raw };
+}
+
+function KV({ campo, valor, monetario, copiavel = true, destacado = false, riscado = false }) {
   if (valor == null || valor === "" || valor === 0 && monetario === false) return null;
   const isMon = monetario !== undefined ? monetario : ehCampoMonetario(campo);
   let display, valorBruto;
   if (isMon) { display = `R$ ${fmtBRL(valor)}`; valorBruto = fmtBRL(valor); }
   else if (typeof valor === "object") { display = JSON.stringify(valor); valorBruto = display; }
-  else { display = String(valor); valorBruto = display; }
+  else {
+    // Formatadores por tipo de campo (data, cpf, cnpj, parentesco)
+    const f = formatarValorCampo(campo, valor);
+    display = f.display;
+    valorBruto = f.raw;
+  }
   // Destacado: o KV ganha borda esquerda âmbar + fundo claro pra sinalizar que esse campo mudou.
   const baseStyle = { display: "flex", gap: 8, fontSize: 12, lineHeight: 1.5, alignItems: "center" };
   const destaqueStyle = destacado
     ? { borderLeft: `2px solid ${COR_AMBAR}`, background: "#fbf5e6", padding: "2px 6px", marginLeft: -8, borderRadius: 2 }
     : {};
+  // Riscado: aplica strike no texto pra indicar que o item será removido
+  const riscoStyle = riscado ? { textDecoration: "line-through", opacity: 0.6 } : {};
   return (
-    <div style={{ ...baseStyle, ...destaqueStyle }}>
+    <div style={{ ...baseStyle, ...destaqueStyle, ...riscoStyle }}>
       <span style={{ color: "#6b6256", minWidth: 130, flexShrink: 0 }}>{labelLegivel(campo)}:</span>
       <span style={{ fontFamily: isMon ? "'IBM Plex Mono', monospace" : "inherit", color: "#1a1612", fontWeight: destacado ? 600 : 400 }}>{display}</span>
-      {copiavel && <BotaoCopiar texto={valorBruto} label={`Copiar ${labelLegivel(campo)}`} />}
+      {copiavel && !riscado && <BotaoCopiar texto={valorBruto} label={`Copiar ${labelLegivel(campo)}`} />}
     </div>
   );
 }
@@ -5341,7 +5817,7 @@ function precisaCopiarDe2024(b) {
 // pra um form com todos os campos editáveis. Ao salvar, chama o callback com os
 // novos valores. Quando `editado=true`, mostra badge âmbar "EDITADO" indicando
 // que o contador sobrescreveu os valores propostos pela IA.
-function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", onSalvarEdicao, editado, alertaIdade, camposDestacados, acoes }) {
+function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, status = "neutro", onSalvarEdicao, editado, alertaIdade, alertas, camposDestacados, acoes, onDuplicar }) {
   const skip = new Set(["origem", "_idx", ...ignoreKeys]);
   const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.neutro;
   const corBorda = color || cfg.borda;
@@ -5385,12 +5861,18 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
     setValoresEdicao({});
   };
 
+  // Detecta se o item está marcado pra excluir do .DBK — afeta visual:
+  // fundo avermelhado + strike-through nos campos.
+  const excluido = !!(acoes?.excluir?.marcado);
+
   return (
     <div style={{
       padding: "12px 14px",
-      background: cfg.bg,
-      borderLeft: `3px solid ${corBorda}`,
+      background: excluido ? "#fbeae6" : cfg.bg,
+      borderLeft: `3px solid ${excluido ? COR_VERMELHO : corBorda}`,
       marginBottom: 10,
+      opacity: excluido ? 0.85 : 1,
+      transition: "background 150ms ease, opacity 150ms ease, border-color 150ms ease",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 2 }}>
         <div style={{ fontWeight: 600, fontSize: 13, color: "#1a1612", flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -5432,11 +5914,39 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
               textTransform: "uppercase",
             }} title={alertaIdade.titulo}>{alertaIdade.texto}</span>
           )}
+          {(alertas || []).map((a, k) => (
+            <span key={k} style={{
+              background: a.cor || COR_AMBAR,
+              color: "#fff",
+              fontSize: 9,
+              fontWeight: 600,
+              letterSpacing: 0.6,
+              padding: "2px 6px",
+              borderRadius: 2,
+              textTransform: "uppercase",
+            }} title={a.titulo}>{a.texto}</span>
+          ))}
         </div>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           <BotaoCopiar texto={textoCompleto} label="Copiar item completo" size={12} />
         </div>
       </div>
+      {/* Faixa de aviso bloqueante — renderizada quando há alertas com .bloqueante=true.
+          Visualmente destaca que o item TEM problema (ex: falta parentesco_cod válido)
+          e mostra a mensagem completa, não só o badge curto. */}
+      {(alertas || []).filter(a => a.bloqueante).map((a, k) => (
+        <div key={`alerta-${k}`} style={{
+          marginTop: 8,
+          padding: "8px 12px",
+          background: "#fdf4e0",
+          borderLeft: `3px solid ${COR_AMBAR}`,
+          fontSize: 11.5,
+          color: "#6b4f0e",
+          lineHeight: 1.5,
+        }}>
+          <strong style={{ color: "#8a6a14" }}>⚠ {a.texto}:</strong> {a.detalhe || a.titulo}
+        </div>
+      ))}
       {item.origem && (
         <div style={{ fontSize: 11, color: "#8a7f6e", fontStyle: "italic", marginBottom: 6 }}>
           {item.origem}
@@ -5502,13 +6012,13 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
         // MODO LEITURA — exibe os KVs como antes
         camposExtra.length > 0 && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "3px 16px", marginTop: 6 }}>
-            {camposExtra.map(([k, v]) => <KV key={k} campo={k} valor={v} destacado={camposDestacados ? (camposDestacados instanceof Set ? camposDestacados.has(k) : camposDestacados.includes(k)) : false} />)}
+            {camposExtra.map(([k, v]) => <KV key={k} campo={k} valor={v} destacado={camposDestacados ? (camposDestacados instanceof Set ? camposDestacados.has(k) : camposDestacados.includes(k)) : false} riscado={excluido} />)}
           </div>
         )
       )}
 
-      {(acoes || podeEditar) && !editando && (
-        <BarraAcoes acoes={acoes} podeEditar={podeEditar} onEditar={iniciarEdicao} />
+      {(acoes || podeEditar || onDuplicar) && !editando && (
+        <BarraAcoes acoes={acoes} podeEditar={podeEditar} onEditar={iniciarEdicao} onDuplicar={onDuplicar} />
       )}
     </div>
   );
@@ -5516,10 +6026,10 @@ function ItemCard({ item, idx, prefixo, getHeader, ignoreKeys = [], color, statu
 
 // Barra de ações inline no rodapé de cada ItemCard.
 // Substitui a antiga seção "Mudanças propostas" — cada item agora controla
-// sua própria aprovação/exclusão/edição diretamente.
-function BarraAcoes({ acoes, podeEditar, onEditar }) {
+// sua própria aprovação/exclusão/edição/duplicação diretamente.
+function BarraAcoes({ acoes, podeEditar, onEditar, onDuplicar }) {
   const { aprovar, excluir } = acoes || {};
-  if (!aprovar && !excluir && !podeEditar) return null;
+  if (!aprovar && !excluir && !podeEditar && !onDuplicar) return null;
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${COR_BORDA}`, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
       {aprovar && (
@@ -5537,12 +6047,11 @@ function BarraAcoes({ acoes, podeEditar, onEditar }) {
         <BotaoToggle
           ativo={!!excluir.marcado}
           onClick={() => excluir.onToggle(!excluir.marcado)}
-          labelAtivo={`🗑 Marcado pra excluir — desmarcar`}
+          labelAtivo={`✓ Exclusão confirmada`}
           labelInativo={`🗑 ${excluir.label || "Excluir do .DBK"}`}
           corAtivo={COR_VERMELHO}
           corInativo={COR_SUTIL}
-          variante="outline"
-          title={excluir.marcado ? "Item será removido do .DBK final" : "Marcar este item pra ser removido do .DBK final"}
+          title={excluir.marcado ? "Item será removido do .DBK final — clique para desfazer" : "Marcar este item pra ser removido do .DBK final"}
         />
       )}
       {podeEditar && (
@@ -5568,6 +6077,31 @@ function BarraAcoes({ acoes, podeEditar, onEditar }) {
           onMouseLeave={(e) => { e.currentTarget.style.borderColor = COR_SUTIL; e.currentTarget.style.color = COR_SUTIL; e.currentTarget.style.background = "transparent"; }}
         >
           ✎ Editar
+        </button>
+      )}
+      {onDuplicar && (
+        <button
+          type="button"
+          onClick={onDuplicar}
+          title="Duplicar este item — cria uma cópia logo abaixo, que vai ser incluída como item novo no .DBK"
+          style={{
+            border: `1px solid ${COR_SUTIL}`,
+            background: "transparent",
+            color: COR_SUTIL,
+            fontSize: 11,
+            fontWeight: 500,
+            padding: "5px 11px",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            letterSpacing: 0.2,
+            transition: "background 100ms ease, color 100ms ease, border-color 100ms ease",
+            whiteSpace: "nowrap",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = COR_TINTA; e.currentTarget.style.color = COR_TINTA; e.currentTarget.style.background = "#f5f1e8"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = COR_SUTIL; e.currentTarget.style.color = COR_SUTIL; e.currentTarget.style.background = "transparent"; }}
+        >
+          ⎘ Duplicar
         </button>
       )}
     </div>
@@ -6133,6 +6667,11 @@ function EstudioIRPFInner() {
   // Chave: `${categoria}_${chave}` (ex: "bem_atualizado_3", "bem_novo_0", "fonte_atualizada_52318822000119")
   // Valor: subset dos campos do item, contendo só o que o contador sobrescreveu.
   const [manualOverrides, setManualOverrides] = useState({});
+  // Itens criados manualmente pelo contador (botão "+ Adicionar" ou "⎘ Duplicar")
+  // Estrutura: { bem: [{_uuid, ...campos}], divida: [...], fonte: [...], pag: [...], isento: [...], excl: [...], dep: [...] }
+  // Cada item ganha um _uuid pra permitir edição/exclusão. Esses itens viram regs novos no .DBK
+  // via loops dedicados no aplicarPatch, similares aos `*_novos_aviso` da IA.
+  const [manualNovos, setManualNovos] = useState({ bem: [], divida: [], fonte: [], pag: [], isento: [], excl: [], dep: [] });
   const [showAjuda, setShowAjuda] = useState(false);
 
   // === Fluxo copy/paste com IA web (sem API) ===
@@ -6462,7 +7001,7 @@ function EstudioIRPFInner() {
 
   function baixarDbk() {
     try {
-      const { conteudo, aplicadas } = aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides);
+      const { conteudo, aplicadas } = aplicarPatch(templateInfo, patch, aprovacoes, manualOverrides, manualNovos);
       const bytes = encodeLatin1(conteudo);
       const blob = new Blob([bytes], { type: "application/octet-stream" });
       const cpf = (templateInfo.contribuinte?.cpf || "00000000000").replace(/\D/g, "").padStart(11, "0");
@@ -6904,7 +7443,7 @@ function EstudioIRPFInner() {
         {/* Conteúdo detalhado do template — com semáforo de cores quando há patch */}
         {templateInfo && (
           <section style={{ marginBottom: 40 }}>
-            <ConteudoTemplate templateInfo={templateInfo} patch={patch} aprovacoes={aprovacoes} setAprovacoes={setAprovacoes} manualOverrides={manualOverrides} setManualOverrides={setManualOverrides} />
+            <ConteudoTemplate templateInfo={templateInfo} patch={patch} aprovacoes={aprovacoes} setAprovacoes={setAprovacoes} manualOverrides={manualOverrides} setManualOverrides={setManualOverrides} manualNovos={manualNovos} setManualNovos={setManualNovos} />
           </section>
         )}
 
